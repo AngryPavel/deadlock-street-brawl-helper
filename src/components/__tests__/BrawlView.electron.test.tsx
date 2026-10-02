@@ -24,6 +24,7 @@ const captureIdle = vi.fn();
 (window as unknown as { brawlAPI: unknown }).brawlAPI = {
   isElectron: true,
   getGameRect: () => Promise.resolve(null),
+  onGameRect: () => () => {},
   getCaptureState: () => Promise.resolve(captureState),
   onCaptureState: (cb: typeof onCaptureStateCb) => {
     onCaptureStateCb = cb;
@@ -153,10 +154,21 @@ describe('BrawlView (Electron, real game: capture only around the draft)', () =>
 
   it('does not start capturing until main.ts says the draft probe hit', async () => {
     render(<BrawlView {...props()} />);
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('waiting for the draft screen'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Deadlock window not found'));
     await new Promise((r) => setTimeout(r, 50));
     expect(calls()).toBe(0);
     onCaptureStateCb?.({ wanted: true, probe: true });
     await waitFor(() => expect(calls()).toBe(1));
+  });
+
+  it('renders only the capture button, status line and how-to when Debug is hidden', async () => {
+    const { container } = render(<BrawlView {...props()} />);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole('button', { name: /start capture/i })).toBeTruthy();
+    expect(screen.getByRole('status')).toBeTruthy();
+    expect(container.textContent).toContain('Borderless Windowed');
+    expect(container.querySelectorAll('select').length).toBe(0);
+    expect(container.textContent).not.toMatch(/top items|Owned|Cards on screen|Ability order|Round|Debug/);
+    expect(container.querySelector('.chip, canvas, .brawl-preview, img')).toBeNull();
   });
 });

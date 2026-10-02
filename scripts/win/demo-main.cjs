@@ -104,6 +104,10 @@ async function main() {
   const control = e2e.getControl();
   const labels = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts', 'win', 'frames', 'labels.json'), 'utf8'));
   const label = labels[choiceArg];
+  await control.webContents.executeJavaScript('document.readyState === "complete"');
+  await control.webContents.executeJavaScript(
+    `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true }))`,
+  );
   await waitFor(
     () => control.webContents.executeJavaScript('!!document.querySelector("select[aria-label=Round]")'),
     15_000,

@@ -22,7 +22,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const API = 'https://api.deadlock-api.com';
-const ASSETS = 'https://assets.deadlock-api.com';
+const ASSETS = `${API}/v1/assets`; // assets.deadlock-api.com no longer resolves; the same data lives under /v1/assets
 const OUT = path.resolve('public/data');
 // `--heroes 1,31` limits --analytics-only to those hero ids.
 const HEROES_ARG = (() => {
@@ -318,7 +318,7 @@ async function fetchBrawl(heroes, manifest) {
     MIN_TS = MAX_TS - WINDOW_DAYS * 86400;
   }
   console.log(`brawl 1/2 mode config`);
-  const generic = await getJson(`${ASSETS}/v2/generic-data`);
+  const generic = await getJson(`${ASSETS}/generic-data`);
   await save('brawl-config.json', { fetched_at: new Date().toISOString(), ...generic.street_brawl });
   console.log(`brawl 2/2 per-hero Street Brawl analytics (${heroes.length} heroes x ${heroes.length} enemies)`);
   for (const h of heroes) {
@@ -466,7 +466,7 @@ async function main() {
   };
 
   console.log('1/4 item catalog');
-  const items = (await getJson(`${ASSETS}/v2/items/by-type/upgrade`)).map(slimItem);
+  const items = (await getJson(`${ASSETS}/items/by-type/upgrade`)).map(slimItem);
   console.log(`   downloading ${items.length} item images`);
   for (const it of items) {
     it.remote_shop_image = it.shop_image_webp;
@@ -481,7 +481,7 @@ async function main() {
   manifest.counts.shopable_items = items.filter((i) => i.shopable && !i.disabled).length;
 
   console.log('2/4 heroes');
-  const heroesRaw = await getJson(`${ASSETS}/v2/heroes`);
+  const heroesRaw = await getJson(`${ASSETS}/heroes`);
   const active = heroesRaw.filter((h) => h.player_selectable && !h.disabled && !h.in_development);
   const heroes = active.map(slimHero);
   for (const h of heroes) {
@@ -495,7 +495,7 @@ async function main() {
   manifest.counts.heroes = heroes.length;
 
   console.log('3/4 abilities');
-  const abilitiesRaw = await getJson(`${ASSETS}/v2/items/by-type/ability`);
+  const abilitiesRaw = await getJson(`${ASSETS}/items/by-type/ability`);
   const activeIds = new Set(active.map((h) => h.id));
   const abilities = abilitiesRaw.filter((a) => activeIds.has(a.hero)).map(slimAbility);
   const sigNames = new Set(heroes.flatMap((h) => h.abilities));

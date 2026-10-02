@@ -157,8 +157,8 @@ function logPreloadErrors(win: BrowserWindow) {
 
 function createControlWindow() {
   control = new BrowserWindow({
-    width: 1200,
-    height: 900,
+    width: 420,
+    height: 380,
     show: !process.env.BRAWL_E2E,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -606,10 +606,15 @@ function setupTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Toggle overlay', click: toggleOverlay },
+      { label: 'Debug panel', click: toggleDebugPanel },
       { label: 'Toggle test mode', click: () => (alive(testWindow) ? stopTestMode() : void startTestMode()) },
       { label: 'Quit', click: () => app.quit() },
     ]),
   );
+}
+
+function toggleDebugPanel() {
+  if (alive(control) && !control.webContents.isDestroyed()) control.webContents.send(CHANNELS.debugToggle);
 }
 
 function toggleOverlay() {
@@ -665,6 +670,7 @@ app.whenReady().then(() => {
   if (process.env.BRAWL_E2E) {
     (globalThis as Record<string, unknown>).__brawlE2E = {
       getControl: () => control,
+      toggleDebugFromTray: toggleDebugPanel,
       getOverlay: () => overlay,
       get overlayIgnoresMouseEvents() {
         return overlayIgnoresMouseEvents;

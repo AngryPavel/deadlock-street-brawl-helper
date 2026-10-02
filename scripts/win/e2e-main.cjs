@@ -287,6 +287,27 @@ async function main() {
   }
 
   if (wantsCase('testmode')) {
+    // Debug panel: hidden at launch, Ctrl+Shift+D toggles it, the tray entry toggles the same state.
+    const hasDebug = () => js(control, '!!document.querySelector("[aria-label=\\"Debug panel\\"]")');
+    const slim = await js(
+      control,
+      '({ selects: document.querySelectorAll("select").length, btn: /Start capture|Stop capture/.test(document.body.innerText) })',
+    );
+    check('debug-hidden-at-launch', !(await hasDebug()) && slim.btn && slim.selects <= 1, JSON.stringify(slim));
+    const key = `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true }))`;
+    await js(control, key);
+    await waitFor(hasDebug, 3000, 100);
+    const dbgParts = await js(
+      control,
+      `(() => ['Round','Choice','Enemy 1'].every((l) => !!document.querySelector('select[aria-label="' + l + '"]')) && !!document.querySelector('.brawl-testmode button') && document.body.innerText.includes('Owned'))()`,
+    );
+    check('debug-shortcut-shows', (await hasDebug()) && dbgParts, 'Ctrl+Shift+D shows test mode/round/choice/enemies/owned');
+    await js(control, key);
+    await waitFor(async () => !(await hasDebug()), 3000, 100);
+    check('debug-shortcut-hides', !(await hasDebug()), 'second press hides');
+    e2e.toggleDebugFromTray();
+    const trayShown = await waitFor(hasDebug, 3000, 100);
+    check('debug-tray-toggle', !!trayShown, 'tray entry handler shows the panel');
     const c1 = labels.choice1;
     await js(
       control,

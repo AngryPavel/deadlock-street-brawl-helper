@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import type { Ability, Hero, Item } from '../../types';
 import { BrawlView } from '../BrawlView';
 
@@ -38,5 +38,24 @@ describe('BrawlView', () => {
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
     expect(container.querySelector('video')).toBe(before);
+  });
+
+  const load = () => ({
+    heroes: readJson('heroes.json') as Hero[],
+    items: readJson('items.json') as Item[],
+    abilities: readJson('abilities.json') as Ability[],
+  });
+
+  it('shows the manual controls under a Debug heading when debug is on', async () => {
+    const { heroes, items, abilities } = load();
+    const { container } = render(
+      <BrawlView hero={heroes[0]} heroes={heroes} items={items} abilities={abilities} onHero={() => {}} debug />,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.textContent).toContain('Debug');
+    expect(screen.getByLabelText('Round')).toBeTruthy();
+    expect(screen.getByLabelText('Choice')).toBeTruthy();
+    expect(screen.getByLabelText('Enemy 1')).toBeTruthy();
+    expect(container.textContent).toContain('Owned');
   });
 });

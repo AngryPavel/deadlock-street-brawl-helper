@@ -22,7 +22,8 @@ export default function App() {
   const [heroId, setHeroId] = usePersisted('heroId', isNumber, INFERNUS);
   const [tab, setTab] = usePersisted<Tab>('tab', isTab, 'advisor');
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
+  const [debug, setDebug] = useState(false); // hidden Debug panel; never persisted
+  const [changeHero, setChangeHero] = useState(false);
   const [heroSource, setHeroSource] = useState<'detected' | 'manual'>('manual');
   const handleHero = (id: number, source: 'detected' | 'manual' = 'manual') => {
     setHeroId(id);
@@ -40,6 +41,22 @@ export default function App() {
       .catch((e) => setError(String(e)));
   }, []);
 
+  // Ctrl+Shift+D (and the tray's "Debug panel" entry) toggles the Debug panel.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        setDebug((d) => !d);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    const off = window.brawlAPI?.onDebugToggle(() => setDebug((d) => !d));
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      off?.();
+    };
+  }, []);
+
   const hero = heroes.find((h) => h.id === heroId);
 
   if (error) return <div className="error">{error}</div>;
@@ -53,26 +70,46 @@ export default function App() {
   return (
     <>
       <header className="app-header">
-        {tab === 'advisor' && <img src={img(hero.images.small)} alt="" />}
+        {tab === 'advisor' && <img className="hero-portrait" src={img(hero.images.small)} alt="" />}
         <div>
           <h1>
-            {tab === 'advisor' ? `${hero.name} Street Brawl` : 'Street Brawl Tier List'}
+            {tab === 'advisor' ? hero.name : 'Street Brawl Tier List'}
             {tab === 'advisor' && heroSource === 'detected' && (
               <span className="hero-auto-badge" title="Auto-detected from the scoreboard">
                 auto
               </span>
             )}
           </h1>
-          <div className="sub">
-            {tab === 'advisor' ? 'Deadlock Street Brawl Helper' : 'Heroes and items graded by win rate and usage'}, data
-            from the 30 days to {fetchedDate}
-            {ageDays !== null && (
-              <span className={stale ? 'stale' : ''}>
-                {' '}
-                ({ageDays} day{ageDays === 1 ? '' : 's'} old)
-              </span>
-            )}
-          </div>
+          {tab === 'advisor' ? (
+            heroSource === 'detected' && !changeHero ? (
+              <button className="link-btn" onClick={() => setChangeHero(true)}>
+                change
+              </button>
+            ) : (
+              <select
+                className="hero-select"
+                value={heroId}
+                onChange={(e) => handleHero(Number(e.target.value), 'manual')}
+                aria-label="Select hero"
+              >
+                {heroes.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
+              </select>
+            )
+          ) : (
+            <div className="sub">
+              Heroes and items graded by win rate and usage, data from the 30 days to {fetchedDate}
+              {ageDays !== null && (
+                <span className={stale ? 'stale' : ''}>
+                  {' '}
+                  ({ageDays} day{ageDays === 1 ? '' : 's'} old)
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </header>
       <nav className="tabs" role="tablist" aria-label="View">
@@ -88,51 +125,11 @@ export default function App() {
           </button>
         ))}
       </nav>
-      {tab === 'advisor' ? (
-        <>
-          <input
-            type="text"
-            className="hero-search"
-            placeholder="Find a hero…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            aria-label="Find a hero"
-          />
-          <div className="hero-strip" role="tablist" aria-label="Hero">
-            {heroes.map((h) => {
-              const match = search.trim() !== '' && h.name.toLowerCase().includes(search.trim().toLowerCase());
-              return (
-                <button
-                  key={h.id}
-                  ref={match ? (el) => el?.scrollIntoView({ block: 'nearest', inline: 'center' }) : undefined}
-                  className={`hero-chip ${h.id === heroId ? 'active' : ''} ${match ? 'match' : ''}`}
-                  onClick={() => handleHero(h.id, 'manual')}
-                  role="tab"
-                  aria-selected={h.id === heroId}
-                >
-                  <img src={img(h.images.small)} alt="" loading="lazy" />
-                  <span>{h.name}</span>
-                </button>
-              );
-            })}
-          </div>
-          <select
-            className="hero-select"
-            value={heroId}
-            onChange={(e) => handleHero(Number(e.target.value), 'manual')}
-            aria-label="Select hero"
-          >
-            {heroes.map((h) => (
-              <option key={h.id} value={h.id}>
-                {h.name}
-              </option>
-            ))}
-          </select>
-          <BrawlView hero={hero} heroes={heroes} items={items} abilities={abilities} onHero={handleHero} />
-        </>
-      ) : (
-        <TierList heroes={heroes} items={items} />
-      )}
+      {/* BrawlView stays mounted on both tabs: it owns the capture loop and the hidden <video>. */}
+      <div hidden={tab !== 'advisor'}>
+        <BrawlView hero={hero} heroes={heroes} items={items} abilities={abilities} onHero={handleHero} debug={debug} />
+      </div>
+      {tab === 'tiers' && <TierList heroes={heroes} items={items} />}
       <footer>
         Data: deadlock-api.com (aggregate analytics, assets). See the{' '}
         <a href="https://github.com/Gidntsquia/deadlock-street-brawl-helper/wiki/Street-Brawl-Advisor">

@@ -6,39 +6,38 @@
 
 A draft advisor for [Deadlock](https://store.steampowered.com/app/1422450/Deadlock/)'s Street Brawl
 mode. It reads the draft screen while you play, ranks the three cards you're offered, and says whether
-the set is worth a re-roll. The advice shows up in a small window on top of the game. Scores are built
+the set is worth a re-roll. The advice shows up directly over the draft screen. Scores are built
 from 30 days of Street Brawl matches from [deadlock-api.com](https://deadlock-api.com).
 
-There is also a Windows app that finds the Deadlock window on its own and draws the advice directly
-over the draft screen, with no picker and no window to place.
+## Download 🚀
 
-## Quickstart 🚀
+Get the Windows app from the [latest Release](https://github.com/Gidntsquia/deadlock-street-brawl-helper/releases/latest).
+It has two files:
 
-Requires [Node.js](https://nodejs.org) 20 or newer. The match data is already in
-the repo and refreshes weekly.
+- `Deadlock Street Brawl Helper <version>.exe`: portable, run it from anywhere.
+- `Deadlock Street Brawl Helper Setup <version>.exe`: installer.
 
-```
-git clone https://github.com/Gidntsquia/deadlock-street-brawl-helper
-cd deadlock-street-brawl-helper
-npm install
-npm run dev   # Open http://localhost:5173 and leave this running
-```
+The files are not code-signed, so Windows SmartScreen will warn "Windows protected your PC". Click
+**More info**, then **Run anyway**.
 
-Then, with Deadlock open:
+Then:
 
 1. In Deadlock's settings, under Video, set Display Mode to **Borderless Windowed**.
-2. In the app, click **Capture game screen + overlay** and pick the Deadlock window from the list.
-3. Play a Street Brawl draft. The advice window follows the draft.
+2. Run the app. It finds the Deadlock window on its own.
+3. Play a Street Brawl draft. The advice appears over the draft screen.
 
-Chrome and Edge keep the advice window on top of the game. Firefox opens it as a plain popup, which
-is best placed on a second monitor.
+No game running? Press **Ctrl+Shift+D** in the app window to open the Debug panel and turn on Test mode.
 
-Other commands:
+The match data was last refreshed on 2026-10-02 (see `public/data/manifest.json`). To refresh it, run
+`npm run fetch-data` and commit the result.
+
+Developing (needs [Node.js](https://nodejs.org) 20 or newer):
 
 ```
 npm run brawl -- --hero 1 --round 2 --set "Improved Spirit,Enchanter's Emblem,Swift Striker"   # Advice without the screen reader
 npm run fetch-data                 # Refresh the 30-day snapshot (~1400 requests, ~9 min)
 npm run brawl:see -- --fixtures    # Card recogniser accuracy on the saved screenshots
+npm run dev                        # Browser version, for development only
 npm run dist                       # Build the Windows app (run on Windows)
 npm run win:dev                    # From WSL: run the Windows app from a synced copy
 ```
@@ -50,6 +49,7 @@ npm run win:dev                    # From WSL: run the Windows app from a synced
 - Cards are ranked for your hero using how often each item is picked in Street Brawl, its win rate, and
   how well it scales that hero's abilities.
 - Your hero is detected from the scoreboard and can be changed by hand.
+- The app window is just a Start/Stop capture button and a status line; debug controls are behind Ctrl+Shift+D.
 - The enemy heroes on the scoreboard shift the ranking toward items that do well against them.
 - Re-roll advice compares the best card on screen with what a fresh set is expected to offer, and the
   box moves to the Use Re-Roll button when a re-roll is the better call.

@@ -56,10 +56,12 @@ interface Props {
   items: Item[];
   abilities: Ability[];
   onHero: (id: number, source?: 'detected' | 'manual') => void;
+  /** The hidden Debug panel (Ctrl+Shift+D) is open: shows the manual controls and the full advice list. */
+  debug?: boolean;
 }
 
 /** Street Brawl draft advisor: the three cards on screen (read from a screen capture or typed in), ranked for this hero. */
-export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
+export function BrawlView({ hero, heroes, items, abilities, onHero, debug = false }: Props) {
   const [loaded, setLoaded] = useState<{ heroId: number; analytics: BrawlAnalytics } | null>(null);
   const [config, setConfig] = useState<BrawlConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -80,6 +82,13 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
   // effect from retrying on every rect tick; cleared once the game window actually appears.
   const [denied, setDenied] = useState(false);
   const [pip, setPip] = useState<Window | null>(null);
+  // Electron: Deadlock's window is on screen (from the game-rect feed); the person pressed Stop (blocks auto-start
+  // until they press Start); a platform warning from main; a draft screen has been seen this session (hides the how-to).
+  const [gameFound, setGameFound] = useState(false);
+  const [manualStop, setManualStop] = useState(false);
+  const manualStopRef = useRef(false);
+  const [platformWarning, setPlatformWarning] = useState<string | null>(null);
+  const [draftSeen, setDraftSeen] = useState(false);
   const [took_, setTook] = useState<string>('');
   const workerRef = useRef<Worker | null>(null);
   const workerStartedRef = useRef(false); // the worker has been sent 'init' (capture loop running or resettable)
@@ -423,7 +432,10 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
   useEffect(() => {
     if (!isElectron) return;
     void window.brawlAPI!.getPlatformWarning().then((warning) => {
-      if (warning) setStatus(warning);
+      if (warning) {
+        setStatus(warning);
+        setPlatformWarning(warning);
+      }
     });
   }, []);
 
@@ -444,7 +456,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
     return window.brawlAPI!.onCaptureState((st) => {
       captureWantedRef.current = st.wanted;
       probeModeRef.current = st.probe;
-      if (st.wanted && capture === 'off') {
+      if (st.wanted && capture === 'off' && !manualStopRef.current) {
         setDenied(false);
         void startCapture();
       } else if (!st.wanted && capture !== 'off') {
@@ -459,7 +471,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
   useEffect(() => {
     if (!isElectron || capture !== 'off') return;
     const t = setInterval(() => {
-      if (captureWantedRef.current) void startCapture();
+      if (captureWantedRef.current && !manualStopRef.current) void startCapture();
     }, 2000);
     return () => clearInterval(t);
   }, [capture]);
@@ -475,6 +487,16 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
     }, CAPTURE_IDLE_MS);
     return () => clearTimeout(t);
   }, [capture, draftOpen, tip, stopCapture]);
+
+  useEffect(() => {
+    if (!isElectron) return;
+    const api = window.brawlAPI!;
+    void api.getGameRect().then((r) => setGameFound(!!r));
+    return api.onGameRect((r) => setGameFound(!!r));
+  }, []);
+  useEffect(() => {
+    if (draftOpen) setDraftSeen(true);
+  }, [draftOpen]);
 
   // Test mode (Electron): main.ts opens a dummy "Deadlock" window showing a draft screenshot and the normal
   // capture path takes it from there; this just mirrors its state and sends the button/select changes.
@@ -813,6 +835,33 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
   // stream, so the worker loop stops getting frames on any hero change (loaded.heroId !== hero.id
   // reopens this loading gap until the new hero's analytics resolve). Show the loading/error state
   // inside the advice area instead.
+  const onStart = () => {
+    manualStopRef.current = false;
+    setManualStop(false);
+    setDenied(false);
+    void startCapture();
+  };
+  const onStop = () => {
+    manualStopRef.current = true;
+    setManualStop(true);
+    captureWantedRef.current = false;
+    stopCapture();
+  };
+  const statusLine = (() => {
+    if (platformWarning) return platformWarning;
+    if (capture === 'starting') return 'Capture starting…';
+    if (capture === 'on') {
+      if (draftOpen) return `Draft — round ${round}, choice ${choice}`;
+      return testMode.on ? 'Test mode on' : 'Capturing — no draft on screen';
+    }
+    if (testMode.on) return 'Test mode on';
+    if (status.startsWith('capture failed')) return status;
+    if (denied)
+      return gameFound ? 'Capture denied — press Start to retry' : 'Deadlock window not found — press Start to retry';
+    if (!isElectron) return status || 'Capture off — press Start';
+    if (!gameFound) return 'Deadlock window not found';
+    return manualStop ? 'Capture stopped — press Start' : 'Deadlock found, capture off';
+  })();
   const advicePanel = (
     <AdvicePanel
       input={input}
@@ -835,286 +884,288 @@ export function BrawlView({ hero, heroes, items, abilities, onHero }: Props) {
     <div className="brawl">
       <video ref={videoRef} muted playsInline style={{ display: 'none' }} />
       <div className="panel brawl-controls">
-        {capture === 'off' && (
-          <div className="muted brawl-howto">
-            {isElectron ? (
-              'Start Deadlock in borderless windowed mode; the overlay starts on its own. No game? Use test mode below.'
-            ) : (
-              <>
-                1. Set Deadlock to <b>borderless windowed</b> mode. 2. Click <b>Capture game screen + overlay</b> below.
-                3. Pick the Deadlock window when asked. Then just play — advice appears on top of the game.
-              </>
-            )}
-          </div>
-        )}
-        <div className="row">
-          <label>
-            Round{' '}
-            <select
-              aria-label="Round"
-              value={round}
-              onChange={(e) => {
-                setRound(Number(e.target.value));
-                setChoice(1);
-                setCards([]);
-              }}
-            >
-              {[1, 2, 3, 4, 5].map((r) => (
-                <option key={r} value={r}>
-                  {r} ({config?.gold_per_round[r - 1] ?? '…'} souls)
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Choice{' '}
-            <select
-              aria-label="Choice"
-              value={choice}
-              onChange={(e) => {
-                setChoice(Number(e.target.value));
-                setCards([]);
-              }}
-            >
-              {[1, 2, 3].map((c) => (
-                <option key={c} value={c}>
-                  {c} of 3{tiers[c - 1] ? ` · tier ${tiers[c - 1].normal} (rare ${tiers[c - 1].rare})` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Re-rolls left{' '}
-            <input
-              type="number"
-              min={0}
-              max={3}
-              value={rerolls}
-              onChange={(e) => setRerollsLeft(Number(e.target.value))}
-            />
-          </label>
-        </div>
-        <div className="row">
-          {enemies.map((id, k) => (
-            <select
-              key={k}
-              value={id}
-              aria-label={`Enemy ${k + 1}`}
-              onChange={(e) => setEnemies((es) => es.map((x, i) => (i === k ? Number(e.target.value) : x)))}
-            >
-              <option value={0}>enemy {k + 1}</option>
-              {heroes.map((h) => (
-                <option key={h.id} value={h.id}>
-                  {h.name}
-                </option>
-              ))}
-            </select>
-          ))}
-        </div>
-        <div className="row">
-          {!isElectron &&
-            (capture === 'on' ? (
-              <button className="btn" onClick={stopCapture}>
-                Stop capture
-              </button>
-            ) : (
-              <button className="btn primary" onClick={startCapture} disabled={capture === 'starting'}>
-                Capture game screen + overlay
-              </button>
-            ))}
-          {!isElectron && (
-            <button className="btn" onClick={pip ? () => pip.close() : openPip}>
-              {pip ? 'Close overlay' : hasDpip() ? 'Always-on-top overlay' : 'Advice window'}
-            </button>
-          )}
-        </div>
-        {isElectron && (
-          <div className="row brawl-testmode">
-            <button
-              className={testMode.on ? 'btn' : 'btn primary'}
-              aria-pressed={testMode.on}
-              onClick={() => void window.brawlAPI!.setTestMode(!testMode.on).then(setTestMode)}
-            >
-              {testMode.on ? 'Turn test mode off' : 'Test mode (dummy Deadlock window)'}
-            </button>
-            {testMode.on && (
-              <label>
-                Screenshot{' '}
-                <select
-                  aria-label="Test screenshot"
-                  value={testMode.frame}
-                  onChange={(e) => void window.brawlAPI!.setTestFrame(e.target.value).then(setTestMode)}
-                >
-                  {testMode.frames.map((f) => (
-                    <option key={f} value={f}>
-                      {f}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {testMode.message && (
-              <span className="brawl-testmode-message" role="alert">
-                {testMode.message}
-              </span>
-            )}
-          </div>
-        )}
+        <button
+          className={capture === 'off' ? 'btn primary brawl-capture' : 'btn brawl-capture'}
+          onClick={capture === 'on' ? onStop : onStart}
+          disabled={capture === 'starting'}
+        >
+          {capture === 'on' ? 'Stop capture' : capture === 'starting' ? 'Starting…' : 'Start capture'}
+        </button>
         <div className="muted brawl-status" role="status" aria-live="polite">
-          {status}
+          {statusLine}
         </div>
+        {!draftSeen && (
+          <div className="muted brawl-howto">
+            In Deadlock, set Video → Display Mode to Borderless Windowed. Advice appears over the draft screen.
+          </div>
+        )}
       </div>
 
-      {pip ? (
-        createPortal(
-          <div className="pip">
-            <h2>
-              {hero.name} · round {round}, choice {choice}
-            </h2>
-            {reroll && (
-              <div className="brawl-reroll-banner">
-                RE-ROLL this set — expected best {reroll.expectedBest.toFixed(2)} vs {reroll.currentBest.toFixed(2)} on
-                screen
-                <button className="btn" onClick={rerolled}>
-                  I re-rolled
-                </button>
-              </div>
-            )}
-            {tip && <AbilityPanel panel={tip} className="ap-pip" />}
-            {capture === 'on' && (
-              <canvas
-                ref={previewRef}
-                width={320}
-                height={180}
-                className="brawl-preview"
-                aria-label="Draft screen with the recommended card boxed"
-              />
-            )}
-            {advicePanel}
-          </div>,
-          pip.document.body,
-        )
-      ) : (
-        <>
-          {/* Electron already draws the box on the real game window via its own overlay; showing this
-              preview here too would just duplicate it in the control window. */}
-          {!isElectron && capture === 'on' && (
-            <canvas
-              ref={previewRef}
-              width={320}
-              height={180}
-              className="brawl-preview"
-              aria-label="Draft screen with the recommended card boxed"
-            />
-          )}
-          {advicePanel}
-        </>
-      )}
-
-      <div className="panel">
-        <h2>Cards on screen</h2>
-        <div className="muted">Filled in by the capture, or pick them here. Tick "enh." for an ENHANCED card.</div>
-        <div className="row">
-          {[0, 1, 2].map((k) => (
-            <span key={k} className="brawl-pick">
-              <select
-                value={cards[k]?.itemId ?? 0}
-                onChange={(e) => setCard(k, Number(e.target.value), !!cards[k]?.enhanced)}
+      {debug && (
+        <div className="panel brawl-debug" aria-label="Debug panel">
+          <h2>Debug</h2>
+          {isElectron && (
+            <div className="row brawl-testmode">
+              <button
+                className={testMode.on ? 'btn' : 'btn primary'}
+                aria-pressed={testMode.on}
+                onClick={() => void window.brawlAPI!.setTestMode(!testMode.on).then(setTestMode)}
               >
-                <option value={0}>card {k + 1}</option>
-                {catalog.map((i) => (
-                  <option key={i.id} value={i.id}>
-                    T{i.item_tier} {i.name}
+                {testMode.on ? 'Turn test mode off' : 'Test mode (dummy Deadlock window)'}
+              </button>
+              {testMode.on && (
+                <label>
+                  Screenshot{' '}
+                  <select
+                    aria-label="Test screenshot"
+                    value={testMode.frame}
+                    onChange={(e) => void window.brawlAPI!.setTestFrame(e.target.value).then(setTestMode)}
+                  >
+                    {testMode.frames.map((f) => (
+                      <option key={f} value={f}>
+                        {f}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {testMode.message && (
+                <span className="brawl-testmode-message" role="alert">
+                  {testMode.message}
+                </span>
+              )}
+            </div>
+          )}
+          <div className="row">
+            <label>
+              Round{' '}
+              <select
+                aria-label="Round"
+                value={round}
+                onChange={(e) => {
+                  setRound(Number(e.target.value));
+                  setChoice(1);
+                  setCards([]);
+                }}
+              >
+                {[1, 2, 3, 4, 5].map((r) => (
+                  <option key={r} value={r}>
+                    {r} ({config?.gold_per_round[r - 1] ?? '…'} souls)
                   </option>
                 ))}
               </select>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={!!cards[k]?.enhanced}
-                  onChange={(e) => cards[k] && setCard(k, cards[k].itemId, e.target.checked)}
-                />{' '}
-                enh.
-              </label>
-            </span>
-          ))}
-        </div>
-      </div>
-
-      {abilityOrder && abilityOrder.steps.length > 0 && (
-        <div className="panel">
-          <h2>Ability order</h2>
-          {abilityOrder.support ? (
-            <div className="muted">
-              seen in {abilityOrder.support.matches} brawls, wins {(abilityOrder.support.winRate * 100).toFixed(0)}%
-            </div>
-          ) : (
-            <div className="muted">no Street Brawl ability data for {hero.name} yet; fallback order shown</div>
-          )}
-          {abilityTarget && <AbilityPanel panel={abilityTarget} className="ap-control" />}
-          <ol className="brawl-ability-order">
-            {abilityOrder.steps.map((s, k) => (
-              <li key={k} className={k === abilityStepNow ? 'now' : ''}>
-                {s.ability.name} <small>({s.kind})</small>
-              </li>
+            </label>
+            <label>
+              Choice{' '}
+              <select
+                aria-label="Choice"
+                value={choice}
+                onChange={(e) => {
+                  setChoice(Number(e.target.value));
+                  setCards([]);
+                }}
+              >
+                {[1, 2, 3].map((c) => (
+                  <option key={c} value={c}>
+                    {c} of 3{tiers[c - 1] ? ` · tier ${tiers[c - 1].normal} (rare ${tiers[c - 1].rare})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Re-rolls left{' '}
+              <input
+                type="number"
+                min={0}
+                max={3}
+                value={rerolls}
+                onChange={(e) => setRerollsLeft(Number(e.target.value))}
+              />
+            </label>
+          </div>
+          <div className="row">
+            {enemies.map((id, k) => (
+              <select
+                key={k}
+                value={id}
+                aria-label={`Enemy ${k + 1}`}
+                onChange={(e) => setEnemies((es) => es.map((x, i) => (i === k ? Number(e.target.value) : x)))}
+              >
+                <option value={0}>enemy {k + 1}</option>
+                {heroes.map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name}
+                  </option>
+                ))}
+              </select>
             ))}
-          </ol>
+          </div>
+          {!isElectron && (
+            <div className="row">
+              <button className="btn" onClick={pip ? () => pip.close() : openPip}>
+                {pip ? 'Close overlay' : hasDpip() ? 'Always-on-top overlay' : 'Advice window'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="panel">
-        <h2>{hero.name}'s top items</h2>
-        <div className="muted">Best pick in each tier, relative to the other items of that tier.</div>
-        <div className="top-items">
-          {topItems.map(({ tier, items }) => (
-            <div key={tier} className="top-items-tier">
-              <h3>Tier {tier}</h3>
-              <div className="tiles">
-                {items.map((b, k) => (
-                  <ItemTile key={b.item.id} item={b.item} order={k + 1} />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+      {(debug || !isElectron) && (
+        <>
+          {pip ? (
+            createPortal(
+              <div className="pip">
+                <h2>
+                  {hero.name} · round {round}, choice {choice}
+                </h2>
+                {reroll && (
+                  <div className="brawl-reroll-banner">
+                    RE-ROLL this set — expected best {reroll.expectedBest.toFixed(2)} vs {reroll.currentBest.toFixed(2)}{' '}
+                    on screen
+                    <button className="btn" onClick={rerolled}>
+                      I re-rolled
+                    </button>
+                  </div>
+                )}
+                {tip && <AbilityPanel panel={tip} className="ap-pip" />}
+                {capture === 'on' && (
+                  <canvas
+                    ref={previewRef}
+                    width={320}
+                    height={180}
+                    className="brawl-preview"
+                    aria-label="Draft screen with the recommended card boxed"
+                  />
+                )}
+                {advicePanel}
+              </div>,
+              pip.document.body,
+            )
+          ) : (
+            <>
+              {/* Electron already draws the box on the real game window via its own overlay; showing this
+              preview here too would just duplicate it in the control window. */}
+              {!isElectron && capture === 'on' && (
+                <canvas
+                  ref={previewRef}
+                  width={320}
+                  height={180}
+                  className="brawl-preview"
+                  aria-label="Draft screen with the recommended card boxed"
+                />
+              )}
+              {advicePanel}
+            </>
+          )}
 
-      <div className="panel">
-        <h2>Owned ({owned.length})</h2>
-        <div className="muted">
-          {capture === 'on'
-            ? 'Read from the inventory grid on the draft screen; tap to remove a mistake.'
-            : 'Tap a card above when you take it; tap here to remove a mistake.'}
+          <div className="panel">
+            <h2>Cards on screen</h2>
+            <div className="muted">Filled in by the capture, or pick them here. Tick "enh." for an ENHANCED card.</div>
+            <div className="row">
+              {[0, 1, 2].map((k) => (
+                <span key={k} className="brawl-pick">
+                  <select
+                    value={cards[k]?.itemId ?? 0}
+                    onChange={(e) => setCard(k, Number(e.target.value), !!cards[k]?.enhanced)}
+                  >
+                    <option value={0}>card {k + 1}</option>
+                    {catalog.map((i) => (
+                      <option key={i.id} value={i.id}>
+                        T{i.item_tier} {i.name}
+                      </option>
+                    ))}
+                  </select>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={!!cards[k]?.enhanced}
+                      onChange={(e) => cards[k] && setCard(k, cards[k].itemId, e.target.checked)}
+                    />{' '}
+                    enh.
+                  </label>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          {abilityOrder && abilityOrder.steps.length > 0 && (
+            <div className="panel">
+              <h2>Ability order</h2>
+              {abilityOrder.support ? (
+                <div className="muted">
+                  seen in {abilityOrder.support.matches} brawls, wins {(abilityOrder.support.winRate * 100).toFixed(0)}%
+                </div>
+              ) : (
+                <div className="muted">no Street Brawl ability data for {hero.name} yet; fallback order shown</div>
+              )}
+              {abilityTarget && <AbilityPanel panel={abilityTarget} className="ap-control" />}
+              <ol className="brawl-ability-order">
+                {abilityOrder.steps.map((s, k) => (
+                  <li key={k} className={k === abilityStepNow ? 'now' : ''}>
+                    {s.ability.name} <small>({s.kind})</small>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          <div className="panel">
+            <h2>{hero.name}'s top items</h2>
+            <div className="muted">Best pick in each tier, relative to the other items of that tier.</div>
+            <div className="top-items">
+              {topItems.map(({ tier, items }) => (
+                <div key={tier} className="top-items-tier">
+                  <h3>Tier {tier}</h3>
+                  <div className="tiles">
+                    {items.map((b, k) => (
+                      <ItemTile key={b.item.id} item={b.item} order={k + 1} />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <h2>Owned ({owned.length})</h2>
+            <div className="muted">
+              {capture === 'on'
+                ? 'Read from the inventory grid on the draft screen; tap to remove a mistake.'
+                : 'Tap a card above when you take it; tap here to remove a mistake.'}
+            </div>
+            <div className="chips">
+              {owned.map((id, k) => (
+                <button key={k} className="chip" onClick={() => setOwned((o) => o.filter((_, i) => i !== k))}>
+                  {byId.get(id)?.name}
+                </button>
+              ))}
+            </div>
+            <div className="row">
+              <button
+                className="btn"
+                onClick={() => {
+                  setOwned([]);
+                  setCards([]);
+                  setTook('');
+                  offeredRef.current = new Set();
+                  setRound(1);
+                  setChoice(1);
+                  setEnemies(Array<number>(ENEMY_SLOTS).fill(0));
+                }}
+              >
+                New game
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+      {debug && (
+        <div className="muted brawl-foot">
+          <img src={img(hero.images.small)} alt="" /> Layout anchors are for 2560×1440; other 16:9 sizes scale. The
+          capture only reads pixels. Run Deadlock in borderless windowed mode so the overlay stays on top of it
+          (Chrome/Edge).
         </div>
-        <div className="chips">
-          {owned.map((id, k) => (
-            <button key={k} className="chip" onClick={() => setOwned((o) => o.filter((_, i) => i !== k))}>
-              {byId.get(id)?.name}
-            </button>
-          ))}
-        </div>
-        <div className="row">
-          <button
-            className="btn"
-            onClick={() => {
-              setOwned([]);
-              setCards([]);
-              setTook('');
-              offeredRef.current = new Set();
-              setRound(1);
-              setChoice(1);
-              setEnemies(Array<number>(ENEMY_SLOTS).fill(0));
-            }}
-          >
-            New game
-          </button>
-        </div>
-      </div>
-      <div className="muted brawl-foot">
-        <img src={img(hero.images.small)} alt="" /> Layout anchors are for 2560×1440; other 16:9 sizes scale. The
-        capture only reads pixels. Run Deadlock in borderless windowed mode so the overlay stays on top of it
-        (Chrome/Edge).
-      </div>
+      )}
     </div>
   );
 }

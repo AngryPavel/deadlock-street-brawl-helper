@@ -57,6 +57,13 @@ const api = {
   getTestMode: (): Promise<TestModeState> => ipcRenderer.invoke(CHANNELS.testModeGet),
   setTestMode: (on: boolean): Promise<TestModeState> => ipcRenderer.invoke(CHANNELS.testModeSet, on),
   setTestFrame: (frame: string): Promise<TestModeState> => ipcRenderer.invoke(CHANNELS.testModeFrame, frame),
+  onDebugToggle: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on(CHANNELS.debugToggle, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.debugToggle, listener);
+    };
+  },
   onTestMode: (cb: (state: TestModeState) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, state: TestModeState) => cb(state);
     ipcRenderer.on(CHANNELS.testModeState, listener);

@@ -23,8 +23,10 @@ Repo constitution for planner / worker / evaluator agents. Overrides generic sta
 - `npm run check` — lint + typecheck + prettier --check + vitest; CI runs this before deploy.
 - `npm run brawl:see -- --fixtures` — recogniser accuracy on `scripts/fixtures/` (must stay 27/27).
 - `npm run brawl -- --hero 1 --round 2 --set "…"` — engine CLI without the screen reader.
-- `npm run fetch-data` — full brawl refresh (~1400 requests, ~9 min). Do not run casually; a weekly
-  GitHub Action does it.
+- `npm run fetch-data` — full brawl refresh (~1400 requests, ~9 min), run by hand before a release; there is no
+  scheduled refresh workflow. Assets come from `api.deadlock-api.com/v1/assets` (the old `assets.` host is gone).
+- Release: push a `v*` tag; `.github/workflows/release.yml` builds the portable exe + NSIS installer on windows-latest
+  and attaches them to the GitHub Release. No Pages deploy exists.
 - `npm run win:setup` — once per machine; installs Node on the Windows side via winget (may prompt UAC).
 - `npm run win:sync` — rsyncs the repo to `/mnt/c/Users/<user>/brawl-helper-win` and builds there. Never
   `rsync --delete` over that copy's `node_modules`; it's gitignored and stays out of this repo.
@@ -55,6 +57,12 @@ Repo constitution for planner / worker / evaluator agents. Overrides generic sta
 capture, overlay, worker or Electron code changed, and only once per session. Docs/comments: run nothing.
 All e2e-needing checks belong in the single `testmode` pass in `scripts/win/e2e-main.cjs`, asserted against
 that one session; do not add a new case or a second app launch. Commands live in `.claude/test-commands.sh`.
+
+## Debug panel
+
+The control window is slim (hero header, Start/Stop capture, status line, how-to) plus the Tier List tab. Ctrl+Shift+D
+(or the tray entry "Debug panel", channel `debugToggle`) toggles a hidden Debug panel with test mode, round/choice/
+re-rolls, enemies, owned, advice list, ability order. Not persisted. `win:e2e`/`win:demo` open it before using those controls.
 
 ## Test mode
 

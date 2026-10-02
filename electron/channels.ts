@@ -16,4 +16,6 @@ export const CHANNELS = {
   captureState: 'capture-state',
   captureIdle: 'capture-idle',
   platformWarning: 'platform-warning',
+  // Tray menu "Debug panel" entry: main -> control window, toggles the hidden Debug panel.
+  debugToggle: 'debug-toggle',
 } as const;
