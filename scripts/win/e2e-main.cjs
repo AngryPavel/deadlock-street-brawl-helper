@@ -301,7 +301,11 @@ async function main() {
       control,
       `(() => ['Round','Choice','Enemy 1'].every((l) => !!document.querySelector('select[aria-label="' + l + '"]')) && !!document.querySelector('.brawl-testmode button') && document.body.innerText.includes('Owned'))()`,
     );
-    check('debug-shortcut-shows', (await hasDebug()) && dbgParts, 'Ctrl+Shift+D shows test mode/round/choice/enemies/owned');
+    check(
+      'debug-shortcut-shows',
+      (await hasDebug()) && dbgParts,
+      'Ctrl+Shift+D shows test mode/round/choice/enemies/owned',
+    );
     await js(control, key);
     await waitFor(async () => !(await hasDebug()), 3000, 100);
     check('debug-shortcut-hides', !(await hasDebug()), 'second press hides');
