@@ -9,7 +9,7 @@
     "dev:electron": "vite --mode electron",
     "build": "tsc -b && vite build",
     "build:electron": "tsc -b && vite build --mode electron",
-    "dist": "npm run build:electron && electron-builder",
+    "dist": "npm run build:electron && electron-builder --publish never",
     "lint": "oxlint",
     "typecheck": "tsc -b",
     "test": "vitest run",
