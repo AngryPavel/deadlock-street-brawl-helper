@@ -16,6 +16,7 @@
 // Flags
 //   --analytics-only            refresh analytics/* only
 //   --brawl                     refresh the Street Brawl snapshot only
+//   --catalog                   refresh items, heroes, abilities and their images only (no analytics)
 //   --brawl-tierlist            rebuild analytics/brawl/tier-list.json only (one request + the files already on disk)
 //   --heroes 1,31               (with --analytics-only) only these hero ids
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -43,6 +44,7 @@ const TOP_BADGE = 90;
 // `--analytics-only` refreshes only public/data/analytics/* from the existing heroes.json.
 const ANALYTICS_ONLY = process.argv.includes('--analytics-only');
 // `--brawl` refreshes only the Street Brawl snapshot (brawl-config.json, analytics/brawl/*).
+const CATALOG_ONLY = process.argv.includes('--catalog');
 const BRAWL_ONLY = process.argv.includes('--brawl');
 // `--brawl-tierlist` rebuilds analytics/brawl/tier-list.json alone: one hero-stats call plus a sum over
 // the per-hero files already on disk, instead of the ~1400 requests a full --brawl run costs.
@@ -507,6 +509,12 @@ async function main() {
   await save('abilities.json', abilities);
   manifest.counts.abilities = abilities.length;
 
+  if (CATALOG_ONLY) {
+    const old = JSON.parse(await readFile(path.join(OUT, 'manifest.json'), 'utf8'));
+    await save('manifest.json', { ...old, catalog_fetched_at: manifest.fetched_at, counts: { ...old.counts, ...manifest.counts } });
+    console.log('done (catalog only)', manifest.counts);
+    return;
+  }
   await fetchAnalytics(heroes, manifest);
 
   await fetchBrawl(heroes, manifest);

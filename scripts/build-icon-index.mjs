@@ -43,7 +43,7 @@ if (existsSync(extraDir))
       .removeAlpha()
       .raw()
       .toBuffer();
-    extras.push([Number(f.replace('.png', '')), buf.toString('base64')]);
+    extras.push([parseInt(f, 10), buf.toString('base64')]);
   }
 // hero portraits: the draft screen's top bar shows each hero's card art cropped to a circle around the head;
 // a square of the card's full width starting 10 % down matches those portraits best (see docs/street-brawl-plan.md)
