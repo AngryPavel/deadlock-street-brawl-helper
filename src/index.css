@@ -1337,11 +1337,11 @@ footer {
   color: rgb(30, 30, 30);
   font-size: calc(18 * var(--u));
 }
-/* On the game: bottom-left corner, 22 % of the window wide. */
+/* On the game: bottom-right corner, 22 % of the window wide. */
 .overlay-ap {
   --u: 0.04536vw;
   position: fixed;
-  left: 1%;
+  right: 1%;
   bottom: 2%;
 }
 .ap-control {
@@ -1541,7 +1541,7 @@ body:not(.overlay-window) #root {
   line-height: 1.35;
 }
 .overlay-panel {
-  left: 1%;
+  right: 1%;
   top: 40%;
   padding: 8px 12px;
   font-size: 18px;
