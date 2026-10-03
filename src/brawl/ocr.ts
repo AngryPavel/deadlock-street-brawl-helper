@@ -90,10 +90,12 @@ export async function readRerollsRemaining(img: RGBImage): Promise<number> {
   const {
     data: { text },
   } = await worker.recognize(png as unknown as Buffer);
-  const digits = text.trim().match(/^\d+$/);
+  // Street Brawl gives 0 or 1 re-roll (brawl-config: 1 per round), so only 0/1 are believable reads. Anything
+  // else (a "0" read as a letter, a "1" read as 7) falls back to the glyph's shape: a thin upright bar is a 1,
+  // any other glyph is a 0. Returning -1 here left the previous count standing, so a spent re-roll never showed.
+  const digits = text.trim().match(/^[01]$/);
   if (digits) return Number(digits[0]);
-  // OCR reads nothing from a soft, dim "1" (a scaled-up window); a lone thin upright bar is a 1.
-  return rerollGlyphIsOne(img) ? 1 : -1;
+  return rerollGlyphIsOne(img) ? 1 : 0;
 }
 
 /** Releases the OCR worker (and its wasm/model memory). Call on app/window teardown; a new call to
