@@ -75,6 +75,11 @@ let lastKey = '',
   acceptedKey = '';
 let lastInv = '',
   sentInv = '';
+// re-roll caption re-reads on a settled draft screen (see the draft branch of the frame handler)
+let rerollBusy = false,
+  rerollAt = 0,
+  rerollLast = -2,
+  rerollKey = '';
 
 let intervalMs = 250;
 // Off the shop screen there's nothing to react to quickly -- poll much slower, and only read the small
@@ -129,6 +134,8 @@ let acceptedRound = 0,
 
 const forgetDraft = () => {
   lastKey = acceptedKey = lastInv = sentInv = '';
+  rerollLast = -2;
+  rerollKey = '';
   wasShop = false;
   settledSig = pendingSig = null;
   knownHero = null;
@@ -299,8 +306,34 @@ self.addEventListener('message', (ev: MessageEvent<WorkerIn>) => {
       if (meta.rerollsRemaining < 0) {
         const forKey = key;
         readRerollsRemaining(img)
-          .then((rerollsRemaining) => post({ type: 'rerolls', forKey, rerollsRemaining }))
+          .then((rerollsRemaining) => {
+            rerollLast = rerollsRemaining;
+            rerollKey = forKey;
+            post({ type: 'rerolls', forKey, rerollsRemaining });
+          })
           .catch(() => {}); // the OCR engine was freed (capture stopped) while this was running
+      }
+    }
+    // The caption can update a beat after the cards do (or the first read can land mid-animation), so keep
+    // re-reading it on the settled screen and post whenever the count changes. Throttled, one read at a time.
+    if (!accepted && key === acceptedKey) {
+      const now = Date.now();
+      if (!rerollBusy && now - rerollAt > 600) {
+        rerollBusy = true;
+        rerollAt = now;
+        const forKey = key;
+        readRerollsRemaining(img)
+          .then((v) => {
+            if (v !== rerollLast || forKey !== rerollKey) {
+              rerollLast = v;
+              rerollKey = forKey;
+              post({ type: 'rerolls', forKey, rerollsRemaining: v });
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            rerollBusy = false;
+          });
       }
     }
     // the inventory grid is only on the draft screen; accept a read once two frames agree
