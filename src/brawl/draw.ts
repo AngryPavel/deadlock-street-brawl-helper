@@ -283,6 +283,7 @@ export function drawDot(
   state: DotState,
   canvasH: number,
   theme: OverlayTheme = readTheme(),
+  pulse = 0,
 ) {
   const g = dotGeometry(canvasH);
   const color = DOT_COLORS[state] || theme.teal;
@@ -292,6 +293,15 @@ export function drawDot(
   ctx.beginPath();
   ctx.arc(g.cx, g.cy, g.r, 0, Math.PI * 2);
   ctx.fill();
+  if (state === 'reading') {
+    // a ring that grows and fades (`pulse` runs 0..1): the app is working on a frame
+    ctx.globalAlpha = 0.6 * (1 - pulse);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.5, g.r * 0.35);
+    ctx.beginPath();
+    ctx.arc(g.cx, g.cy, g.r * (1 + 1.6 * pulse), 0, Math.PI * 2);
+    ctx.stroke();
+  }
   ctx.restore();
   return { ...g, color, state };
 }

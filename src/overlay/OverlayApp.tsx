@@ -43,7 +43,7 @@ export default function OverlayApp() {
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, c.width, c.height);
-    const dot = state.dot ? drawDot(ctx, state.dot, c.height) : null;
+    const dot = state.dot ? drawDot(ctx, state.dot, c.height, undefined, (Date.now() % 1200) / 1200) : null;
     dotRef.current = dot ? dot.state : null;
     if (window.brawlAPI?.isE2E) window.__overlayDot = dot;
     if (!overlayHasContent(state) || !state.frameW || !state.frameH) {
@@ -171,6 +171,17 @@ export default function OverlayApp() {
       setPanelState(state);
       draw(state);
     });
+  }, []);
+
+  // the amber dot pulses while the app is reading, so it is clear it is working (cheap: only while reading)
+  useEffect(() => {
+    if (window.brawlAPI?.isE2E) return;
+    const t = setInterval(() => {
+      const st = stateRef.current;
+      if (st?.dot === 'reading') draw(st);
+    }, 100);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- draw only reads refs
   }, []);
 
   const c_ = dotTip && canvasRef.current ? dotGeometry(canvasRef.current.height) : null;

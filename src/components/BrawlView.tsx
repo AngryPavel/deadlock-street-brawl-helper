@@ -55,6 +55,7 @@ const DRAFT_FPS = 15;
 const perf = createPerf(import.meta.env.DEV, 'brawl-view');
 const WAITING_STATUS = 'waiting for the draft screen';
 const NO_DRAFT_STATUS = 'No draft found';
+const DETECT_MISSES = 3; // non-draft results in a row before Detect now says "No draft found" (the first frame is often blank)
 const DETECT_TIMEOUT_MS = 4000; // a try that gets no frame at all in this long counts as failed
 const CAPTURE_IDLE_MS = 4000; // no draft screen or tip for this long: stop capturing (real game only)
 const IDLE_FPS = 4;
@@ -104,6 +105,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const [draftSeen, setDraftSeen] = useState(false);
   const [f8InUse, setF8InUse] = useState(false);
   // A running Detect now try: pressed-at time; the first frame result decides hit or miss.
+  const detectMissesRef = useRef(0);
   const detectRef = useRef<{ at: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [took_, setTook] = useState<string>('');
   const workerRef = useRef<Worker | null>(null);
@@ -308,6 +310,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       return;
     }
     const at = performance.now();
+    detectMissesRef.current = 0;
     detectRef.current = {
       at,
       timer: setTimeout(() => {
@@ -872,7 +875,9 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       stepTracker(r.shop);
       if (detectRef.current) {
         if (r.shop) finishDetect('hit');
-        else {
+        else if (++detectMissesRef.current < DETECT_MISSES) {
+          return;
+        } else {
           finishDetect('miss');
           captureWantedRef.current = false;
           stopCapture();
@@ -990,10 +995,10 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
             <button
               className="btn brawl-detect"
               onClick={() => void window.brawlAPI!.detectNow()}
-              disabled={!gameFound}
+              disabled={!gameFound || status === 'Detecting…'}
               title={gameFound ? 'Read the game once, now (F8)' : 'Deadlock not found'}
             >
-              Detect now (F8)
+              {status === 'Detecting…' ? 'Detecting…' : 'Detect now (F8)'}
             </button>
           )}
         </div>
