@@ -214,14 +214,14 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         .sort((a, b) => a.item_tier - b.item_tier || a.name.localeCompare(b.name)),
     [items],
   );
-  const enemyIds = enemies.filter(Boolean);
+  const enemyIds = useMemo(() => enemies.filter(Boolean), [enemies]);
   const heroId = hero.id;
   const advice = useMemo(() => {
     if (!input || cards.length < 3) return null; // advise only once all 3 cards are read
     const sets: Offer[][] = [[], [], []];
     sets[choice - 1] = cards;
     return adviseDraft(input, { round, owned, enemies: enemyIds, sets });
-  }, [input, cards, round, owned, choice, enemies]);
+  }, [input, cards, round, owned, choice, enemyIds]);
   const ranked: RankedOffer[] = useMemo(() => advice?.sets[choice - 1] ?? [], [advice, choice]);
   useEffect(() => {
     rankedRef.current = ranked;
@@ -947,7 +947,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       if (vid && frames.supported) vid.cancelVideoFrameCallback(vfcId);
       w.removeEventListener('message', onMessage);
     };
-  }, [capture, byId, heroId, heroes, onHero, hero]);
+  }, [capture, byId, heroId, heroes, onHero, hero, setRound, setEnemies]);
 
   const took = (r: RankedOffer) => {
     setOwned((o) => [...o, r.item.id]);

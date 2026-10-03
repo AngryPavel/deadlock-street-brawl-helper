@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import sharp from 'sharp';
 import { matchIcon, readMarkers, readTier, resolveTwin, type DecodedIndex, type RGBImage } from '../src/brawl';
 
-export const FIX = 'scripts/fixtures/brawl-cards';
+const FIX = 'scripts/fixtures/brawl-cards';
 
 export interface FixtureLabel {
   item_id: number;
@@ -29,7 +29,7 @@ export interface FixtureResult {
   enhancedFrac: number;
 }
 
-export const load = async (p: string): Promise<RGBImage> => {
+const load = async (p: string): Promise<RGBImage> => {
   const { data, info } = await sharp(p).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   return { width: info.width!, height: info.height!, data, channels: 3 };
 };

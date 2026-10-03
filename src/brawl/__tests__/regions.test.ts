@@ -59,7 +59,7 @@ describe('draftRegions', () => {
   const cases: [string, number | undefined][] = [
     ['public/demo/choice1.png', undefined],
     ['public/demo/choice2.png', 1920],
-    ['scripts/win/frames/choice1.png', 2560],
+    ['public/demo/choice1.png', 2560],
   ];
   for (const [file, width] of cases)
     it(`masking ${file}${width ? ` at ${width}px` : ''} to the regions changes no read`, async () => {

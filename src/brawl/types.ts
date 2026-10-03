@@ -1,7 +1,7 @@
 import type { Ability, AbilityOrderStat, Hero, Item, ItemStat, PairStat } from '../types';
 
 /** Slim item-stats row from the enemy-filtered `item-stats?enemy_hero_ids=<id>` query. */
-export interface VsStat {
+interface VsStat {
   item_id: number;
   wins: number;
   matches: number;

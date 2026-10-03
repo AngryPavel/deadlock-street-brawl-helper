@@ -1,6 +1,6 @@
 import type { Ability, Hero, Item } from '../types';
 
-export const base = `${(import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}data/`;
+const base = `${(import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}data/`;
 export async function j<T>(rel: string): Promise<T> {
   const r = await fetch(base + rel);
   if (!r.ok) throw new Error(`Missing snapshot ${rel} – run \`npm run fetch-data\``);

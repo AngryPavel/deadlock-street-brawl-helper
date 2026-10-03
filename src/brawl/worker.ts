@@ -55,7 +55,7 @@ export type WorkerOut =
   | { type: 'tick'; full: boolean } // full: send a whole frame; otherwise just the probe crop
   | { type: 'rerolls'; forKey: string; rerollsRemaining: number };
 
-export interface FrameResult {
+interface FrameResult {
   type: 'result';
   shop: boolean; // isShopScreen(img) for this frame -- false means card/inventory recognition was skipped entirely
   round: number; // this frame's ROUND / CHOICE labels (0: unread; always 0 on a non-draft frame)

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 
 const PREFIX = 'brawl.';
 
@@ -24,13 +24,15 @@ function writeStorage(key: string, value: unknown): void {
 /** `useState` backed by `localStorage` under the `brawl.` key prefix, validated with `isValid` on read. */
 export function usePersisted<T>(key: string, isValid: (v: unknown) => v is T, fallback: T) {
   const [value, setValueState] = useState<T>(() => readStorage(key, isValid, fallback));
-  const setValue = (next: T | ((prev: T) => T)) => {
-    setValueState((prev) => {
-      const resolved = typeof next === 'function' ? (next as (prev: T) => T)(prev) : next;
-      writeStorage(key, resolved);
-      return resolved;
-    });
-  };
+  const setValue = useCallback(
+    (next: T | ((prev: T) => T)) =>
+      setValueState((prev) => {
+        const resolved = typeof next === 'function' ? (next as (prev: T) => T)(prev) : next;
+        writeStorage(key, resolved);
+        return resolved;
+      }),
+    [key],
+  );
   return [value, setValue] as const;
 }
 

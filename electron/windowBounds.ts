@@ -7,7 +7,7 @@ export interface Bounds {
 
 export const MIN_WIDTH = 360;
 export const MIN_HEIGHT = 300;
-export const DEFAULT_SIZE = { width: 460, height: 640 };
+const DEFAULT_SIZE = { width: 460, height: 640 };
 
 export function isBounds(v: unknown): v is Bounds {
   if (!v || typeof v !== 'object') return false;

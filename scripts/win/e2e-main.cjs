@@ -1,8 +1,7 @@
 // Windows-only Electron test harness. Run by real electron.exe (never Linux Electron): sets BRAWL_E2E=1,
 // requires the REAL electron-dist/main.js (not a stub), drives it via executeJavaScript, and writes one
 // JSON report. Filter cases with --only <name1,name2,...>. Everything runs against the app's own Test mode
-// dummy window (no fake-deadlock.ps1 window is opened). Hard timeout 60s; a full run
-// takes ~25 s. The ability panel lasts TIP_MS here (BRAWL_TIP_MS, 1.2 s) instead of the real 15 s.
+// dummy window. Hard timeout 40 s; a full run takes ~25 s. The ability panel lasts TIP_MS here (BRAWL_TIP_MS, 1.2 s) instead of the real 15 s.
 'use strict';
 process.env.BRAWL_E2E = '1';
 const TIP_MS = 1200;
@@ -10,7 +9,7 @@ process.env.BRAWL_TIP_MS = String(TIP_MS);
 const HARD_TIMEOUT_MS = 40_000;
 
 const path = require('node:path');
-const { spawnSync, spawn } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const { app } = require('electron');
 // A dummy window sitting under other windows must keep rendering (and being capturable): no occlusion throttling.
@@ -18,7 +17,6 @@ app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,Al
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 const ROOT = path.join(__dirname, '..', '..');
-const FAKE_PS1 = path.join(__dirname, 'fake-deadlock.ps1');
 const REPORT_PATH = path.join(ROOT, 'logs', 'win-e2e.json');
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only'));
@@ -42,12 +40,6 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function runPs(args) {
-  return spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', FAKE_PS1, ...args], {
-    windowsHide: false,
-  });
-}
-
 const DEBUG_LOG = path.join(ROOT, 'logs', 'win-e2e-debug.log');
 try {
   fs.mkdirSync(path.dirname(DEBUG_LOG), { recursive: true });
@@ -62,43 +54,6 @@ function dbg(msg) {
     /* best effort */
   }
   process.stdout.write(msg + '\n'); // not console.log: console.log is wrapped below to call dbg()
-}
-
-let fakeProc = null;
-let fakeWindowRect = null; // { pid, client:{x,y,width,height}, window:{...} } parsed from fake-deadlock.ps1's stdout
-function startFakeWindow(args = []) {
-  stopFakeWindow();
-  fakeWindowRect = null;
-  dbg(`spawning fake-deadlock.ps1: ${FAKE_PS1} exists=${fs.existsSync(FAKE_PS1)}`);
-  // NOTE: detached:true here made the child exit almost instantly on Windows (code 0, no window,
-  // no pidfile written) instead of blocking in Application.Run — verified by isolating the spawn
-  // outside Electron entirely. Non-detached works correctly; we kill it explicitly via -Stop in
-  // stopFakeWindow()/finish(), so we don't need OS-level detachment.
-  fakeProc = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', FAKE_PS1, ...args], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: false,
-  });
-  dbg(`fake-deadlock pid=${fakeProc.pid}`);
-  fakeProc.stdout?.on('data', (d) => {
-    const text = d.toString();
-    dbg('fake-deadlock stdout: ' + text);
-    for (const line of text.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('{')) continue;
-      try {
-        fakeWindowRect = JSON.parse(trimmed);
-      } catch {
-        /* not our JSON line */
-      }
-    }
-  });
-  fakeProc.stderr?.on('data', (d) => dbg('fake-deadlock stderr: ' + d.toString()));
-  fakeProc.on('error', (e) => dbg('fake-deadlock spawn error: ' + e.message));
-  fakeProc.on('exit', (code, sig) => dbg(`fake-deadlock exited code=${code} sig=${sig}`));
-}
-function stopFakeWindow() {
-  runPs(['-Stop']);
-  fakeProc = null;
 }
 
 async function waitFor(fn, timeoutMs, stepMs = 200) {
@@ -134,8 +89,6 @@ console.log = (...args) => {
   realConsoleLog(...args);
 };
 
-const PID_FILE = path.join(require('node:os').tmpdir(), 'brawl-fake-deadlock.pid');
-
 // Sets React-controlled selects the way a person would (native value setter + change event).
 const SET_SELECT_JS = `
   function __setSelect(sel, value) {
@@ -166,10 +119,7 @@ process.on('uncaughtException', (err) => {
   dbg('main-process uncaughtException: ' + (err && err.stack ? err.stack : String(err)));
 });
 
-// Must run before any stopFakeWindow()/finish() call: lists every window titled exactly "Deadlock" and
-// fails hard if one exists that this harness did not itself start (i.e. its pid isn't the one recorded by
-// fake-deadlock.ps1's own pid file). Nothing is stopped either way — that's fake-deadlock.ps1 -Stop's job,
-// scoped to its own pid file.
+// Fails hard if any window titled exactly "Deadlock" is already open (a real game). Nothing is stopped.
 function checkNoRealGameOpen() {
   const ps = spawnSync(
     'powershell.exe',
@@ -185,13 +135,11 @@ function checkNoRealGameOpen() {
     .map((s) => s.trim())
     .filter(Boolean)
     .map(Number);
-  const ourPid = fs.existsSync(PID_FILE) ? Number(fs.readFileSync(PID_FILE, 'utf8').trim()) : null;
-  const foreign = titledDeadlock.filter((p) => p !== ourPid);
-  if (foreign.length > 0) {
+  if (titledDeadlock.length > 0) {
     check(
       'real-game-open',
       false,
-      `pid(s) ${foreign.join(',')} have a window titled 'Deadlock' that this harness did not start`,
+      `pid(s) ${titledDeadlock.join(',')} have a window titled 'Deadlock' that this harness did not start`,
     );
     return false;
   }
@@ -703,8 +651,7 @@ async function main() {
           same = false;
       }
       await sleep(3_000);
-      const last = control.getBounds(),
-        want = spots[2];
+      const last = control.getBounds();
       // DIP->physical rounding at fractional display scale (125%) moves values by 1-2 px; what matters is no drift afterwards.
       const first = reads[2];
       const stable =
@@ -801,7 +748,6 @@ function finish(code) {
   fs.mkdirSync(path.dirname(REPORT_PATH), { recursive: true });
   fs.writeFileSync(REPORT_PATH, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
-  stopFakeWindow();
   app.exit(code);
 }
 

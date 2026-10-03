@@ -35,7 +35,7 @@ export const cardAnchors = (width: number, height: number) => {
 
 /** The "Use Re-Roll" pill on the draft screen, measured at 2560x1440 from the user's screenshots
  *  (screenshots/brawl/reroll-choice{1,2}.png, gitignored): a light-bordered pill roughly 1140-1420 x 913-996. */
-export const REROLL_BUTTON = { x0: 1140, y0: 913, x1: 1420, y1: 996 } as const;
+const REROLL_BUTTON = { x0: 1140, y0: 913, x1: 1420, y1: 996 } as const;
 
 /** Re-roll button rect for an arbitrary screen size. */
 export const rerollButtonRect = (width: number, height: number) => {
@@ -71,7 +71,7 @@ const b64 = (s: string): Uint8Array => {
 };
 
 /** Mask: 1 for pixels compared, 0 for the top-right corner where the tier numeral sits. */
-export const iconMask = (size: number): Float32Array => {
+const iconMask = (size: number): Float32Array => {
   const m = new Float32Array(size * size).fill(1);
   const c = Math.ceil(size * 0.28);
   for (let y = 0; y < c; y++) for (let x = size - c; x < size; x++) m[y * size + x] = 0;
@@ -79,7 +79,7 @@ export const iconMask = (size: number): Float32Array => {
 };
 
 /** Per-channel mean/std normalised pixels, mask applied, so lighting and background offsets cancel. */
-export function normalise(px: ArrayLike<number>, size: number, mask: Float32Array): Float32Array {
+function normalise(px: ArrayLike<number>, size: number, mask: Float32Array): Float32Array {
   const out = new Float32Array(size * size * 3);
   for (let ch = 0; ch < 3; ch++) {
     let s = 0,
@@ -122,7 +122,7 @@ export function decodeIconIndex(idx: IconIndex): DecodedIndex {
 
 /** Mask: 1 inside the inscribed circle (hero portraits are round). */
 const circleMasks = new Map<number, Float32Array>();
-export const circleMask = (size: number): Float32Array => {
+const circleMask = (size: number): Float32Array => {
   const cached = circleMasks.get(size);
   if (cached) return cached;
   const m = new Float32Array(size * size);
@@ -137,7 +137,7 @@ export const circleMask = (size: number): Float32Array => {
 };
 
 /** Box-filtered resample of the square (x0, y0, edge) of `img` down to size x size RGB. */
-export function sampleSquare(img: RGBImage, x0: number, y0: number, edge: number, size: number): Float32Array {
+function sampleSquare(img: RGBImage, x0: number, y0: number, edge: number, size: number): Float32Array {
   const out = new Float32Array(size * size * 3);
   const step = edge / size,
     ch = img.channels,
@@ -363,8 +363,8 @@ export function matchIcon(
 }
 const SHORTLIST = 12;
 
-export const MIN_ICON_SCORE = 0.45; // icon similarity floor; between this and SURE_ICON_SCORE a tier numeral must also be read
-export const SURE_ICON_SCORE = 0.75;
+const MIN_ICON_SCORE = 0.45; // icon similarity floor; between this and SURE_ICON_SCORE a tier numeral must also be read
+const SURE_ICON_SCORE = 0.75;
 
 export interface CardRead {
   card: string;
@@ -549,11 +549,11 @@ export const HERO_BAR = {
   step: 4,
   scales: [0.92, 1, 1.08],
 } as const;
-export const MIN_HERO_SCORE = 0.6;
+const MIN_HERO_SCORE = 0.6;
 const HERO_SHORTLIST = 8;
-export const MIN_HERO_MARGIN = 0.08;
+const MIN_HERO_MARGIN = 0.08;
 
-export interface HeroMatch {
+interface HeroMatch {
   heroId: number;
   score: number;
   margin: number;
@@ -563,7 +563,7 @@ export interface HeroBar {
   right: HeroMatch[];
 }
 
-export function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: number, diameter: number): HeroMatch {
+function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: number, diameter: number): HeroMatch {
   const mask = circleMask(index.size),
     offs = offsetsOf(mask);
   let n = 0;
@@ -612,7 +612,7 @@ export function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: nu
 }
 
 /** Reads the eight portraits; heroId is 0 for a slot that could not be read. */
-export function readHeroBar(img: RGBImage, index: DecodedIndex): HeroBar {
+function readHeroBar(img: RGBImage, index: DecodedIndex): HeroBar {
   const sx = img.width / BRAWL_LAYOUT.ref.width,
     sy = img.height / BRAWL_LAYOUT.ref.height;
   const read = (xs: readonly number[]) =>
@@ -621,7 +621,7 @@ export function readHeroBar(img: RGBImage, index: DecodedIndex): HeroBar {
 }
 
 /** `readHeroBar` minus the player's three teammates (left as unread slots): `enemiesFrom` and `selfHero` never look at them. */
-export function readLeanBar(img: RGBImage, index: DecodedIndex, slot: { left: number; right: number }): HeroBar {
+function readLeanBar(img: RGBImage, index: DecodedIndex, slot: { left: number; right: number }): HeroBar {
   const ownSide = slot.left >= 0 ? 'left' : slot.right >= 0 ? 'right' : null;
   if (!ownSide) return readHeroBar(img, index);
   const sx = img.width / BRAWL_LAYOUT.ref.width,
@@ -639,7 +639,7 @@ export function readLeanBar(img: RGBImage, index: DecodedIndex, slot: { left: nu
 // edges run the full height of the upper half, and the tile fill in the top corners differs from the bar background
 // beside it. While the "round starting" banner is up every slot sits in a tile, so a frame where several slots show
 // tiles is rejected and the next frame is used.
-export const SELF_TILE = { edgeRun: 0.9, minScore: 40, maxTiles: 2 } as const;
+const SELF_TILE = { edgeRun: 0.9, minScore: 40, maxTiles: 2 } as const;
 
 function pxAt(img: RGBImage, x: number, y: number): [number, number, number] {
   x = Math.min(img.width - 1, Math.max(0, x));
@@ -666,7 +666,7 @@ function meanRect(img: RGBImage, x0: number, y0: number, x1: number, y1: number)
 }
 
 /** Index (0..3) of the player's slot on each side, or -1. */
-export function readSelfSlot(img: RGBImage): { left: number; right: number } {
+function readSelfSlot(img: RGBImage): { left: number; right: number } {
   const sx = img.width / BRAWL_LAYOUT.ref.width,
     sy = img.height / BRAWL_LAYOUT.ref.height;
   const cy = HERO_BAR.cy * sy,
@@ -712,7 +712,7 @@ export function readSelfSlot(img: RGBImage): { left: number; right: number } {
 }
 
 /** The player's hero id from the bar, or 0 when the square-topped slot is missing or unreadable. */
-export function selfHero(bar: HeroBar, self: { left: number; right: number }): number {
+function selfHero(bar: HeroBar, self: { left: number; right: number }): number {
   if (self.left >= 0) return bar.left[self.left]?.heroId ?? 0;
   if (self.right >= 0) return bar.right[self.right]?.heroId ?? 0;
   return 0;
@@ -863,7 +863,7 @@ const CHOICE_DIGITS: Record<number, Float32Array> = {
     '01488510',
   ]),
 };
-export const MAX_DIGIT_DISTANCE = 0.06;
+const MAX_DIGIT_DISTANCE = 0.06;
 const LOOSE_DIGIT_DISTANCE = 0.13;
 /** The round digit is only read on the draft screen (the choice label already vouches for that), so it can afford
  *  to accept the softer glyph a scaled-up window gives: a live capture of the 2 sat at 0.14-0.20, runner-up 0.27-0.33. */
@@ -912,7 +912,7 @@ function readGlyphBBox(
 }
 
 /** Fill grid of the first glyph in the window, or null when the window holds no text. */
-export function readGlyph(
+function readGlyph(
   img: RGBImage,
   x0: number,
   y0: number,
@@ -1183,7 +1183,7 @@ export function readRoundChoice(img: RGBImage): { round: number; choice: number 
 // ---- inventory grid ------------------------------------------------------------------------------------
 // The player's items sit bottom-left of the draft screen: two rows of five 66 px icons (2560x1440), 75 px pitch.
 // Reading it gives the owned list without any clicking, and a new icon that was on offer is the card the player took.
-export const INVENTORY = {
+const INVENTORY = {
   x0: 147,
   y0: 1272,
   pitch: 75,
@@ -1195,11 +1195,11 @@ export const INVENTORY = {
 } as const;
 /** The grid as a newer game build draws it: the stat bars become a row of icons above, the grid moves to the screen
  *  edge and the tiles grow (72 px, 82 px pitch). `readInventory` reads both layouts and keeps the one that matches more. */
-export const INVENTORY_WIDE = { ...INVENTORY, x0: 34, y0: 1261, pitch: 82, icon: 72 } as const;
+const INVENTORY_WIDE = { ...INVENTORY, x0: 34, y0: 1261, pitch: 82, icon: 72 } as const;
 const INVENTORY_LAYOUTS = [INVENTORY, INVENTORY_WIDE] as const;
-export const MIN_INVENTORY_SCORE = 0.6; // for items that were on offer or are already owned
-export const SURE_INVENTORY_SCORE = 0.85; // for anything else
-export const MIN_INVENTORY_SD = 20; // raw pixel std-dev below which a slot counts as empty
+const MIN_INVENTORY_SCORE = 0.6; // for items that were on offer or are already owned
+const SURE_INVENTORY_SCORE = 0.85; // for anything else
+const MIN_INVENTORY_SD = 20; // raw pixel std-dev below which a slot counts as empty
 
 export interface InventoryRead {
   slot: number;

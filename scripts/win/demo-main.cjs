@@ -50,8 +50,7 @@ async function waitFor(fn, timeoutMs, stepMs = 200) {
   return null;
 }
 
-// Same guard as e2e-main.cjs's checkNoRealGameOpen, minus the pid-file exemption (this script starts no
-// window titled "Deadlock" of its own, so every match found is foreign).
+// Same guard as e2e-main.cjs's checkNoRealGameOpen: pids of any open window titled exactly "Deadlock".
 function foreignDeadlockWindows() {
   const ps = spawnSync(
     'powershell.exe',

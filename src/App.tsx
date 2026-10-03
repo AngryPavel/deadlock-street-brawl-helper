@@ -24,6 +24,7 @@ export default function App() {
   const [tab, setTab] = usePersisted<Tab>('tab', isTab, 'advisor');
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState(false); // hidden Debug panel; never persisted
+  const [now] = useState(Date.now);
   const [changeHero, setChangeHero] = useState(false);
   const [heroSource, setHeroSource] = useState<'detected' | 'manual'>('manual');
   const handleHero = (id: number, source: 'detected' | 'manual' = 'manual') => {
@@ -77,7 +78,7 @@ export default function App() {
 
   const fetchedAt = manifest?.brawl?.fetched_at ?? manifest?.fetched_at;
   const fetchedDate = fetchedAt?.slice(0, 10);
-  const ageDays = fetchedAt ? Math.floor((Date.now() - Date.parse(fetchedAt)) / 86400000) : null;
+  const ageDays = fetchedAt ? Math.floor((now - Date.parse(fetchedAt)) / 86400000) : null;
   const stale = ageDays !== null && ageDays > 14;
 
   return (

@@ -6,9 +6,9 @@ import type { CardRead } from './recognise';
 /** Frames a card may go unread before it is dropped (~0.4 s at the 15 fps draft rate). */
 export const HOLD_FRAMES = 6;
 /** Position/size change, as a share of the icon edge, that counts as noise and is ignored. */
-export const DEADBAND = 0.06;
+const DEADBAND = 0.06;
 /** Change past this share of the edge is a real move: adopted at once. In between, it is eased in. */
-export const JUMP = 0.3;
+const JUMP = 0.3;
 
 export interface StableState {
   reads: CardRead[];

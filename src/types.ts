@@ -1,6 +1,6 @@
 export type SlotType = 'weapon' | 'vitality' | 'spirit';
 
-export interface ItemProperty {
+interface ItemProperty {
   value: string | number;
   label?: string;
   postfix?: string;
@@ -26,7 +26,7 @@ export interface Item {
   tooltip_sections: TooltipSection[];
   properties: Record<string, ItemProperty>;
 }
-export interface TooltipSection {
+interface TooltipSection {
   section_type?: string;
   section_attributes?: {
     properties?: string[];

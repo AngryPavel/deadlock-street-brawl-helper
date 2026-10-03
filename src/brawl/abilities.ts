@@ -70,15 +70,15 @@ export function brawlAbilityOrder(input: BrawlInput): BrawlAbilityOrder {
 export const abilityStepIndex = (round: number, choice: number) => (round - 1) * 3 + choice - 1;
 
 /** Ability points Street Brawl hands out per round (rounds 1-5; deadlock.wiki "Street Brawl", `m_vecAPPerRound`). */
-export const AP_PER_ROUND = [6, 6, 5, 5, 10] as const;
+const AP_PER_ROUND = [6, 6, 5, 5, 10] as const;
 /** Cost of the tier 1 / 2 / 3 point pill. Four abilities fully upgraded cost 32, the five rounds' total. */
-export const PILL_COST = [1, 2, 5] as const;
+const PILL_COST = [1, 2, 5] as const;
 
 /** How a point looks in the ability panel: spent this round (`now`, highlighted), spent in an earlier round
  *  (`done`, dark with a check), or not yet spent (`later`). */
 export type PointState = 'now' | 'done' | 'later';
 
-export interface PanelSlot {
+interface PanelSlot {
   name: string;
   icon: string; // app-relative image path
   key: string;
@@ -95,12 +95,12 @@ export interface AbilityPanelData {
 }
 
 /** Key caps under the four abilities, left to right (the third is a guess: the reference shot hides it). */
-export const ABILITY_KEYS = ['Q', 'E', 'R', 'F'] as const;
+const ABILITY_KEYS = ['Q', 'E', 'R', 'F'] as const;
 
 /** Which round (1-5) buys each pill, keyed `<class_name>:<tier 1-3>`. Follows the standard order strictly; a pill
  *  that does not fit waits and the unspent points carry to the next round. If the order ends early, the rest are
  *  bought tier 1s first, then tier 2s, then tier 3s, in bar order, so rounds 1-5 always spend all 32. */
-export function pillRounds(order: BrawlAbilityOrder, hero: Hero): Map<string, number> {
+function pillRounds(order: BrawlAbilityOrder, hero: Hero): Map<string, number> {
   const classes = hero.abilities.slice(0, 4);
   const queue: string[] = [];
   const add = (k: string) => {

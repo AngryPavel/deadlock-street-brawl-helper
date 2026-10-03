@@ -25,21 +25,20 @@ export const BRAWL_WEIGHTS = {
   enhanced: 0.6,
   dup: 1.0,
 };
-export const WIN_SHRINK_FRAC = 0.05; // K = max(200, 5 % of the tier's most-picked item)
-export const MIN_PAIR_MATCHES = 20;
-export const MIN_VS_MATCHES = 50; // enemy-filtered rows below this are ignored
-export const ENHANCED_STAT_MULT = 1.25; // UNVERIFIED: the API does not publish enhanced numbers; measure from tooltips
-export const MAX_ACTIVES = 4; // Brawl keeps the 4-active cap (no per-slot caps); a 5th active gets a penalty, not a veto
+const WIN_SHRINK_FRAC = 0.05; // K = max(200, 5 % of the tier's most-picked item)
+const MIN_PAIR_MATCHES = 20;
+const MIN_VS_MATCHES = 50; // enemy-filtered rows below this are ignored
+const ENHANCED_STAT_MULT = 1.25; // UNVERIFIED: the API does not publish enhanced numbers; measure from tooltips
+const MAX_ACTIVES = 4; // Brawl keeps the 4-active cap (no per-slot caps); a 5th active gets a penalty, not a veto
 export const ACTIVE_OVERFLOW_PENALTY = 0.5;
-export const REROLL_GAIN_THRESHOLD = 0; // re-roll whenever a fresh draw is expected to beat the set's best card
+const REROLL_GAIN_THRESHOLD = 0; // re-roll whenever a fresh draw is expected to beat the set's best card
 // Per-card rare / enhanced chance as seen on screen: 4 rare and 3 enhanced of the 27 fixture cards
 // (scripts/fixtures/brawl-cards/labels.json). The config's outcome-weight tables give 0.39 and 0.26 per card if read as
 // counts over the nine cards of a round, which is far above what the draft shows and made a fresh set look better
 // than the best card of its tier; whatever those tables count, it is not that. Set either to null to use the config.
-export const RARE_PER_CARD: number | null = 4 / 27;
-export const ENHANCED_PER_CARD: number | null = 3 / 27;
-export const CARDS_PER_SET = 3;
-export const SETS_PER_ROUND = 3;
+const RARE_PER_CARD: number | null = 4 / 27;
+const ENHANCED_PER_CARD: number | null = 3 / 27;
+const CARDS_PER_SET = 3;
 
 export interface Base {
   item: Item;
@@ -52,7 +51,7 @@ export interface Base {
 }
 
 /** Items that can appear on a draft card. */
-export const draftable = (i: Item) => !i.disabled && i.item_tier >= 1 && !/^upgrade_|Disabled/.test(i.name);
+const draftable = (i: Item) => !i.disabled && i.item_tier >= 1 && !/^upgrade_|Disabled/.test(i.name);
 
 const shrink = (wins: number, matches: number, K: number, mean: number) => (wins + K * mean) / (matches + K);
 
@@ -238,7 +237,7 @@ export function scoreOffer(
 }
 
 /** Rare (tier-bumped) chance per card: the measured constant, else the config's outcome-count weight table. */
-export function rareChancePerCard(input: BrawlInput, round: number): number {
+function rareChancePerCard(input: BrawlInput, round: number): number {
   if (RARE_PER_CARD !== null) return RARE_PER_CARD;
   const r =
     input.config.item_draft_rounds_per_game_round[
@@ -256,7 +255,7 @@ export function rareChancePerCard(input: BrawlInput, round: number): number {
 }
 
 /** Enhanced chance per card: the measured constant, else the config's outcome-count weight table. */
-export function enhancedChancePerCard(input: BrawlInput, round: number): number {
+function enhancedChancePerCard(input: BrawlInput, round: number): number {
   if (ENHANCED_PER_CARD !== null) return ENHANCED_PER_CARD;
   const r =
     input.config.item_draft_rounds_per_game_round[
@@ -273,7 +272,7 @@ export function enhancedChancePerCard(input: BrawlInput, round: number): number 
   return w ? Math.min(1, ew / w / cards) : 0;
 }
 
-export interface Dist {
+interface Dist {
   s: number;
   w: number;
 }
@@ -286,7 +285,7 @@ export interface Dist {
  * (a rare slot re-rolls into another rare-tier card, a normal slot into a normal one); null draws it with the round's
  * rare chance. `actives` applies the overflow penalty.
  */
-export function cardDist(
+function cardDist(
   input: BrawlInput,
   bases: Map<number, Base>,
   round: number,
@@ -322,7 +321,7 @@ export function cardDist(
 }
 
 /** Distribution of the maximum of independent draws, one per slot: P(max ≤ v) = Π_j F_j(v). */
-export function maxDist(slots: Dist[][]): Dist[] {
+function maxDist(slots: Dist[][]): Dist[] {
   const values = [...new Set(slots.flat().map((d) => d.s))].sort((a, b) => a - b);
   const sorted = slots.map((sl) => [...sl].sort((a, b) => a.s - b.s));
   const idx = slots.map(() => 0),
@@ -341,13 +340,13 @@ export function maxDist(slots: Dist[][]): Dist[] {
   return out;
 }
 
-export const mean = (d: Dist[]) => d.reduce((a, x) => a + x.s * x.w, 0);
+const mean = (d: Dist[]) => d.reduce((a, x) => a + x.s * x.w, 0);
 
 /**
  * Expected best score of a fresh set of 3 cards. `enhanced` and `rare` give the slots' flags when the set is on screen
  * (a re-roll keeps both); when the set is still unseen, every slot draws them at the round's chances.
  */
-export function expectedBestOfSet(
+function expectedBestOfSet(
   input: BrawlInput,
   bases: Map<number, Base>,
   round: number,

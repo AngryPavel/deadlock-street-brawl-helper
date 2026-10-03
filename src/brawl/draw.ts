@@ -113,7 +113,7 @@ const DEFAULT_THEME: OverlayTheme = {
   text: '#ece6da',
   muted: '#a39e92',
 };
-export function readTheme(): OverlayTheme {
+function readTheme(): OverlayTheme {
   if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return DEFAULT_THEME;
   const cs = getComputedStyle(document.documentElement);
   const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
@@ -270,12 +270,12 @@ export function scoresFromAdvice(advice: OverlayAdvice | null): Record<number, n
 }
 
 /** Where the lobby status dot sits on a canvas of this height: ~10 px diameter and a 12 px margin at 1080p. */
-export function dotGeometry(canvasH: number) {
+function dotGeometry(canvasH: number) {
   const k = canvasH / 1080;
   const r = (10 * k) / 2;
   return { cx: 12 * k + r, cy: 12 * k + r, r };
 }
-export const DOT_COLORS: Record<DotState, string> = { watching: '', reading: '#f0a830', failed: '#8a9092' };
+const DOT_COLORS: Record<DotState, string> = { watching: '', reading: '#f0a830', failed: '#8a9092' };
 const DOT_WORD: Record<DotState, string> = {
   watching: 'Watching for the draft',
   reading: 'Reading the draft',
