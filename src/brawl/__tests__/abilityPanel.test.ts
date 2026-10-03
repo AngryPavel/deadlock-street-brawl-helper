@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { abilityPanelFor, brawlAbilityOrder } from '../abilities';
-import { initialTip, stepTip, TIP_MS } from '../abilityPanelTimer';
+import { CLOSE_FRAMES, initialTip, stepTip, TIP_MS } from '../abilityPanelTimer';
 import { overlayHasContent } from '../overlayContent';
 import { heroByName, inputFor } from './testData';
 
@@ -14,23 +14,22 @@ describe('ability tip lifecycle', () => {
   it('is 15 s by default, starts only after a draft closes, and expires on its own', () => {
     expect(TIP_MS).toBe(15_000);
     expect(run([[false, 0]]).tip).toBeNull(); // never saw a draft: nothing to show
+    const T = CLOSE_FRAMES * 100;
     const closed = run([
       [true, 0],
-      [false, 100],
-      [false, 200],
-    ]); // two non-draft frames = closed
-    expect(closed.tip).toEqual({ value: 'Afterburn', endsAt: 200 + TIP_MS });
-    expect(stepTip(closed, false, 200 + TIP_MS - 1, null).tip).not.toBeNull();
-    const done = stepTip(closed, false, 200 + TIP_MS, null);
+      ...Array.from({ length: CLOSE_FRAMES }, (_, i): [boolean, number] => [false, (i + 1) * 100]),
+    ]);
+    expect(closed.tip).toEqual({ value: 'Afterburn', endsAt: T + TIP_MS });
+    expect(stepTip(closed, false, T + TIP_MS - 1, null).tip).not.toBeNull();
+    const done = stepTip(closed, false, T + TIP_MS, null);
     expect(done.tip).toBeNull();
-    expect(stepTip(done, false, 200 + TIP_MS + 5000, 'Afterburn').tip).toBeNull(); // no reappearing until next draft
+    expect(stepTip(done, false, T + TIP_MS + 5000, 'Afterburn').tip).toBeNull(); // no reappearing until next draft
   });
 
   it('ends at once when a draft reopens, and a one-frame blink does not start a tip', () => {
     const closed = run([
       [true, 0],
-      [false, 100],
-      [false, 200],
+      ...Array.from({ length: CLOSE_FRAMES }, (_, i): [boolean, number] => [false, (i + 1) * 100]),
     ]);
     expect(stepTip(closed, true, 1000, 'Afterburn').tip).toBeNull();
     expect(

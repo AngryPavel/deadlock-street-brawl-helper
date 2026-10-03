@@ -4,7 +4,7 @@
 /** How long the tip stays up. */
 export const TIP_MS = 15_000;
 /** Consecutive non-draft frames before the draft counts as closed (the screen can blink between choices). */
-export const CLOSE_FRAMES = 2;
+export const CLOSE_FRAMES = 6;
 
 export interface TipState<T> {
   draft: boolean; // the draft screen is (still) considered open

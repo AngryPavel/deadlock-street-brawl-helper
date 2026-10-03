@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
 import { createPortal } from 'react-dom';
 import type { Ability, Hero, Item } from '../types';
 import { j, img } from '../data/load';
@@ -146,6 +147,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const ownedRef = useRef<number[]>([]);
   const cardsRef = useRef<Offer[]>([]);
   const prevCardsRef = useRef<Offer[]>([]); // the set on screen before the current one: the pick shows up in the grid after the screen has moved on
+  const stableRef = useRef<StableState>(emptyStable());
   const readsRef = useRef<CardRead[]>([]); // latest card positions on screen, for the preview highlight
   const acceptedKeyRef = useRef(''); // last accepted card-set key, to discard a stale async 'rerolls' OCR result
   const rankedRef = useRef<RankedOffer[]>([]);
@@ -815,7 +817,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         perf.record(r.shop ? 'worker.draft' : 'worker.probe', r.ms);
         for (const [k, v] of Object.entries(r.stages ?? {})) perf.record(`worker.${k}`, v);
       }
-      readsRef.current = r.reads;
+      stableRef.current = r.shop ? stabilise(stableRef.current, r.reads) : emptyStable();
+      readsRef.current = stableRef.current.reads;
       const seen = r.reads.filter((x) => x.present).length;
       if (r.accepted) {
         const offers = r.reads.map(toOffer);
