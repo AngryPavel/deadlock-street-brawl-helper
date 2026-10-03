@@ -381,8 +381,20 @@ function syncDetectKey(gameExists: boolean) {
 /** Detect now (F8, button, tray): capture of the game on at once (bypassing the screen probe and the foreground
  *  check); the control window reads the first frame and reports hit or miss. Returns false without a game window. */
 function detectNow(source: string): boolean {
+  if (!lastRect) {
+    // the poll may not have found the window yet: look right now instead of refusing
+    const found = findGameWindow(GAME_WINDOW_TITLE, ownWindowHandles());
+    if (found) {
+      lastRect = found;
+      sendControl(CHANNELS.gameRect, found);
+      if (alive(overlay)) overlay.setBounds(toDipBounds(found));
+      syncOverlay();
+      syncDetectKey(true);
+    }
+  }
   if (!lastRect) return false;
   log('electron-main', 'info', 'detect.request', { source });
+  captureFailed = false;
   captureHeld = false;
   captureWanted = true;
   emitCaptureState();

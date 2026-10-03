@@ -313,7 +313,17 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       draft: !!draftRef.current,
       worker: !!workerRef.current,
     });
-    if (!isElectron || detectRef.current) return; // presses during a running try are ignored
+    if (!isElectron) return;
+    // a new press restarts everything, even while an earlier try is still running
+    if (detectRef.current) clearTimeout(detectRef.current.timer);
+    detectRef.current = null;
+    cardsRef.current = [];
+    prevCardsRef.current = [];
+    acceptedKeyRef.current = '';
+    unreadFramesRef.current = 0;
+    lastReadSigRef.current = '';
+    setCards([]);
+    setRerollsLeft(null);
     const at = performance.now();
     detectMissesRef.current = 0;
     detectRef.current = {
@@ -328,14 +338,12 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       const fc = fullCanvasRef.current;
       if (fc && fc.width) window.brawlAPI?.saveDebugFrame?.(fc.toDataURL('image/png'));
     }, 1500);
-    // a draft already on screen: throw the old read away and read it again, so the press visibly does something
-    if (draftRef.current && workerRef.current) workerRef.current.postMessage({ type: 'reset' } satisfies WorkerIn);
-    if (captureStateRef.current === 'off') {
-      manualStopRef.current = false;
-      setManualStop(false);
-      setDenied(false);
-      void startCapture();
-    }
+    // throw every old read away and start a fresh capture + worker, whatever state capture was in
+    manualStopRef.current = false;
+    setManualStop(false);
+    setDenied(false);
+    if (captureStateRef.current !== 'off') stopCapture();
+    void startCapture();
   };
   const runDetectRef = useRef(runDetect);
   runDetectRef.current = runDetect;
@@ -900,11 +908,9 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         else if (++detectMissesRef.current < DETECT_MISSES) {
           return;
         } else {
+          // report it, but keep watching: the draft may simply not be open yet
           finishDetect('miss');
-          captureWantedRef.current = false;
-          stopCapture();
           setStatus(NO_DRAFT_STATUS);
-          window.brawlAPI!.detectMiss();
           return;
         }
       }
@@ -912,7 +918,10 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       // A card the recogniser cannot read (usually a hover tooltip covering it) must not leave the previous
       // screen's advice up: after three such frames of a new card set, drop the old cards.
       if (r.shop && !r.accepted && seen < 3 && r.key !== acceptedKeyRef.current) {
-        if (++unreadFramesRef.current >= 3 && cardsRef.current.length) {
+        // A readable card outside the shown set means a new screen with a card still hidden: drop at once.
+        const shown = new Set(cardsRef.current.map((c) => c.itemId));
+        const foreign = r.reads.some((x) => x.present && x.itemId && !shown.has(x.itemId));
+        if ((foreign || ++unreadFramesRef.current >= 3) && cardsRef.current.length) {
           cardsRef.current = [];
           setCards([]);
         }

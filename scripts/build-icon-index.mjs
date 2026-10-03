@@ -31,6 +31,20 @@ for (const f of readdirSync(dir)
     .toBuffer();
   icons[id] = buf.toString('base64');
 }
+// In-game art that differs from the shop art (e.g. Bullet Resilience): scripts/icon-extras/<itemId>.png, an icon-sized
+// crop of a real draft frame. Each is matched as an extra reference for that item.
+const extras = [];
+const extraDir = 'scripts/icon-extras';
+if (existsSync(extraDir))
+  for (const f of readdirSync(extraDir).filter((f) => f.endsWith('.png'))) {
+    const buf = await sharp(`${extraDir}/${f}`)
+      .flatten({ background: BG })
+      .resize(ICON_PX, ICON_PX, { fit: 'fill', kernel: 'lanczos3' })
+      .removeAlpha()
+      .raw()
+      .toBuffer();
+    extras.push([Number(f.replace('.png', '')), buf.toString('base64')]);
+  }
 // hero portraits: the draft screen's top bar shows each hero's card art cropped to a circle around the head;
 // a square of the card's full width starting 10 % down matches those portraits best (see docs/street-brawl-plan.md)
 const heroes = JSON.parse(readFileSync('public/data/heroes.json', 'utf8'));
@@ -55,7 +69,7 @@ const twins = {};
 for (const ids of hashes.values()) if (ids.length > 1) for (const id of ids) twins[id] = ids.filter((x) => x !== id);
 writeFileSync(
   'public/data/brawl-icons.json',
-  JSON.stringify({ size: ICON_PX, background: BG, icons, twins, heroes: portraits }),
+  JSON.stringify({ size: ICON_PX, background: BG, icons, extras, twins, heroes: portraits }),
 );
 console.log(
   'twins:',

@@ -102,14 +102,18 @@ export function normalise(px: ArrayLike<number>, size: number, mask: Float32Arra
 export function decodeIconIndex(idx: IconIndex): DecodedIndex {
   const mask = iconMask(idx.size);
   const ids = Object.keys(idx.icons).map(Number);
+  const extras = idx.extras ?? [];
   const twins = new Map<number, number[]>();
   for (const [a, bs] of Object.entries(idx.twins ?? {})) twins.set(Number(a), bs);
   const cmask = circleMask(idx.size);
   const heroIds = Object.keys(idx.heroes ?? {}).map(Number);
   return {
     size: idx.size,
-    ids,
-    pixels: ids.map((id) => normalise(b64(idx.icons[id]), idx.size, mask)),
+    ids: [...ids, ...extras.map(([id]) => id)],
+    pixels: [
+      ...ids.map((id) => normalise(b64(idx.icons[id]), idx.size, mask)),
+      ...extras.map(([, px]) => normalise(b64(px), idx.size, mask)),
+    ],
     twins,
     heroIds,
     heroPixels: heroIds.map((id) => normalise(b64(idx.heroes![id]), idx.size, cmask)),
@@ -299,9 +303,9 @@ export interface IconMatch {
 }
 
 /** Top `k` icon ids for one sampled window (coarse pass). */
-const shortlist = (v: Float32Array, ids: number[], pixels: Float32Array[], n: number, k: number): number[] => {
-  const scored = ids.map((id, i) => ({ id, s: ncc(v, pixels[i], n) })).sort((a, b) => b.s - a.s);
-  return scored.slice(0, k).map((x) => x.id);
+const shortlist = (v: Float32Array, pixels: Float32Array[], n: number, k: number): number[] => {
+  const scored = pixels.map((p, i) => ({ i, s: ncc(v, p, n) })).sort((a, b) => b.s - a.s);
+  return scored.slice(0, k).map((x) => x.i);
 };
 
 /**
@@ -325,13 +329,15 @@ export function matchIcon(
   const search = opts?.search ?? BRAWL_LAYOUT.search,
     scales = opts?.scales ?? BRAWL_LAYOUT.scales;
   const step = Math.max(2, Math.round(icon / 24));
-  let pool: number[];
-  if (candidates) pool = candidates;
-  else {
+  let ks: number[]; // positions in the index (an item can have more than one reference icon)
+  if (candidates) {
+    const want = new Set(candidates);
+    ks = [];
+    index.ids.forEach((id, k) => want.has(id) && ks.push(k));
+  } else {
     const v0 = normalise(sampleSquare(img, cx - icon / 2, cy - icon / 2, icon, index.size), index.size, mask);
-    pool = shortlist(v0, index.ids, index.pixels, n, SHORTLIST);
+    ks = shortlist(v0, index.pixels, n, SHORTLIST);
   }
-  const ks = pool.map((id) => index.ids.indexOf(id)).filter((k) => k >= 0);
   let best: IconMatch = { itemId: 0, score: -1, margin: 0, x: 0, y: 0, edge: icon };
   let second = -1;
   const reach = (icon * Math.max(1, ...scales)) / 2 + search + 2;
@@ -581,7 +587,7 @@ export function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: nu
       index.size,
       mask,
     );
-    for (const id of shortlist(v0, index.heroIds, index.heroPixels, n, HERO_SHORTLIST)) pool.add(id);
+    for (const k of shortlist(v0, index.heroPixels, n, HERO_SHORTLIST)) pool.add(index.heroIds[k]);
   }
   const ks = [...pool].map((id) => index.heroIds.indexOf(id));
   const reach = (diameter * Math.max(...HERO_BAR.scales)) / 2 + search + 2;

@@ -348,7 +348,12 @@ self.addEventListener('message', (ev: MessageEvent<WorkerIn>) => {
       inventory = ids;
     }
     lastInv = ik;
-  } else if (!key) lastInv = '';
+  } else if (!key) {
+    lastInv = '';
+    // A card is unreadable: the page may drop its advice (see BrawlView), so the same set must be accepted again
+    // once all three cards read, or the advice would never come back.
+    acceptedKey = '';
+  }
   lastKey = key;
   pendingSig = key ? sig : null;
   pendingReads = reads;
