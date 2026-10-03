@@ -375,7 +375,10 @@ export function readDraftScreen(img: RGBImage, index: DecodedIndex, tierOf: (id:
   return cardAnchors(img.width, img.height).map((a) => {
     const match = matchIcon(img, index, a.cx, a.cy, a.icon);
     const tier = match.score >= MIN_ICON_SCORE ? readTier(img, match) : 0;
-    const present = match.score >= SURE_ICON_SCORE || (match.score >= MIN_ICON_SCORE && tier > 0);
+    // The numeral only tells twin icons apart: an icon with no twin needs none (a numeral is not always readable, e.g.
+    // when the game shows the card without one or the card is hovered).
+    const unique = match.score >= MIN_ICON_SCORE && !index.twins?.get(match.itemId)?.length;
+    const present = match.score >= SURE_ICON_SCORE || (match.score >= MIN_ICON_SCORE && (tier > 0 || unique));
     const mk = present ? readMarkers(img, match) : { rare: false, enhanced: false, rareFrac: 0, enhancedFrac: 0 };
     return {
       card: a.name,
