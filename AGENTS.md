@@ -53,7 +53,7 @@ Repo constitution for planner / worker / evaluator agents. Overrides generic sta
 
 ## Which tests to run
 
-`npm test` (vitest, 81 tests) takes ~8 s: run it after any code change; run one file with
+`npm test` (vitest, 125 tests, already the whole suite) takes ~3 s wall: run it after any code change; run one file with
 `npx vitest run <file>`. `npm run check` before pushing. `npm run win:e2e` (~30 s, drives real Windows) only when
 capture, overlay, worker or Electron code changed, and only once per session. Docs/comments: run nothing.
 All e2e-needing checks belong in the single `testmode` pass in `scripts/win/e2e-main.cjs`, asserted against
