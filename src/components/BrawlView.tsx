@@ -305,10 +305,6 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   /** F8 / the button / the tray: main has already turned capture on; the first frame result decides (see onMessage). */
   const runDetect = () => {
     if (!isElectron || detectRef.current) return; // presses during a running try are ignored
-    if (draftRef.current) {
-      log('brawl-view', 'info', 'detect.manual', { outcome: 'hit', ms: 0, already: true });
-      return;
-    }
     const at = performance.now();
     detectMissesRef.current = 0;
     detectRef.current = {
@@ -319,6 +315,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       }, DETECT_TIMEOUT_MS),
     };
     setStatus('Detecting…');
+    // a draft already on screen: throw the old read away and read it again, so the press visibly does something
+    if (draftRef.current && workerRef.current) workerRef.current.postMessage({ type: 'reset' } satisfies WorkerIn);
     if (captureStateRef.current === 'off') {
       manualStopRef.current = false;
       setManualStop(false);
