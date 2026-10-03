@@ -53,6 +53,8 @@ const api = {
   },
   /** The draft (and its ability tip) is over: capture stopped, go back to probing. */
   captureIdle: () => ipcRenderer.send(CHANNELS.captureIdle),
+  minimizeWindow: () => ipcRenderer.send(CHANNELS.windowMinimize),
+  closeWindow: () => ipcRenderer.send(CHANNELS.windowClose),
   getPlatformWarning: (): Promise<string | null> => ipcRenderer.invoke(CHANNELS.platformWarning),
   getTestMode: (): Promise<TestModeState> => ipcRenderer.invoke(CHANNELS.testModeGet),
   setTestMode: (on: boolean): Promise<TestModeState> => ipcRenderer.invoke(CHANNELS.testModeSet, on),

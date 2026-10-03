@@ -18,4 +18,7 @@ export const CHANNELS = {
   platformWarning: 'platform-warning',
   // Tray menu "Debug panel" entry: main -> control window, toggles the hidden Debug panel.
   debugToggle: 'debug-toggle',
+  // Custom title strip buttons: renderer -> main.
+  windowMinimize: 'window-minimize',
+  windowClose: 'window-close',
 } as const;

@@ -1241,48 +1241,6 @@ footer {
   }
 }
 
-/* Electron overlay window: transparent, click-through, drawn on top of the game itself. Positioned clear of
-   the inventory grid (right side) and the ability bar (bottom-centre): left 0-17%, y 40-78% of the window. */
-.overlay-panel {
-  position: fixed;
-  left: 1%;
-  top: 40%;
-  width: 16%;
-  max-height: 38%;
-  overflow: hidden;
-  pointer-events: none;
-  background: rgb(10, 16, 16);
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 10px;
-  padding: 10px 12px;
-  color: #fff;
-  font-family:
-    system-ui,
-    -apple-system,
-    sans-serif;
-  font-size: 18px;
-  line-height: 1.35;
-}
-.overlay-panel-head {
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.overlay-panel-reroll {
-  color: #ffb020;
-  font-weight: 800;
-  text-transform: uppercase;
-}
-.overlay-panel-card {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.overlay-panel-status {
-  margin-top: 6px;
-  font-size: 14px;
-  opacity: 0.85;
-}
-
 .brawl-testmode {
   align-items: center;
   gap: 0.75rem;
@@ -1417,4 +1375,205 @@ footer {
 }
 .brawl-debug {
   margin-top: 12px;
+}
+
+/* ---- Identity: Deadlock noir (charcoal + teal). Defined once here; the control window and the overlay both use it. ---- */
+:root {
+  --bg: #101314;
+  --bg-raised: #171c1d;
+  --bg-hover: #1f2627;
+  --overlay-panel: rgba(16, 19, 20, 0.85);
+  --teal: #2ec4b6;
+  --teal-dim: #1b6f68;
+  --teal-ink: #06201d;
+  --text: #ece6da;
+  --muted: #a39e92;
+  --line: rgba(46, 196, 182, 0.35);
+  --radius: 4px;
+  /* the older palette names, remapped so every existing component picks up the new look */
+  --room: var(--bg);
+  --room2: var(--bg-raised);
+  --board: var(--bg-raised);
+  --board-edge: var(--teal-dim);
+  --board-head: #1f2627;
+  --ink: var(--text);
+  --ink-soft: var(--muted);
+  --navy: var(--bg-raised);
+  --navy-track: #0b0e0f;
+  --navy-ink: var(--text);
+  --accent: var(--teal);
+}
+html,
+body {
+  background: var(--bg);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+body {
+  background: var(--bg);
+}
+html:has(body.overlay-window),
+body.overlay-window {
+  background: transparent;
+}
+input,
+select,
+textarea {
+  user-select: text;
+  cursor: text;
+}
+select,
+button,
+a,
+[role='tab'] {
+  cursor: pointer;
+}
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--teal-dim);
+  border-radius: var(--radius);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+body:not(.overlay-window) #root {
+  padding-top: 32px;
+  max-width: none;
+}
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 32px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+}
+.titlebar-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius);
+}
+.titlebar-name {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.titlebar-btn {
+  -webkit-app-region: no-drag;
+  width: 46px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+}
+.titlebar-btn:hover {
+  background: var(--bg-hover);
+}
+.titlebar-btn.close:hover {
+  background: #c42b1c;
+}
+.app-header {
+  top: 32px;
+  background: var(--bg-raised);
+  color: var(--text);
+  border-bottom: 1px solid var(--line);
+  box-shadow: none;
+}
+.app-header img {
+  border-radius: var(--radius);
+  border: 1px solid var(--teal);
+}
+.hero-auto-badge {
+  border-radius: var(--radius);
+  color: var(--teal-ink);
+  background: var(--teal);
+}
+.hero-search,
+.hero-select,
+.hero-chip,
+.board,
+.phase,
+.tile,
+.panel {
+  border-radius: var(--radius);
+}
+.board {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* Overlay (drawn over the game): charcoal panels at ~85 % with a thin teal border, warm off-white text. */
+.overlay-panel,
+.overlay-tip {
+  position: fixed;
+  pointer-events: none;
+  background: var(--overlay-panel);
+  border: 1px solid var(--teal);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  line-height: 1.35;
+}
+.overlay-panel {
+  left: 1%;
+  top: 40%;
+  padding: 8px 12px;
+  font-size: 18px;
+}
+.overlay-panel-reroll {
+  color: var(--teal);
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.overlay-tip {
+  min-width: 220px;
+  padding: 8px 10px;
+  font-size: 15px;
+}
+.tip-head {
+  font-weight: 700;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--muted);
+}
+.tip-row b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.tip-total {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  color: var(--text);
+  font-weight: 700;
+}
+/* Ability points panel in the same panel style */
+.overlay-ap.ap {
+  border: 1px solid var(--teal);
+  border-radius: var(--radius);
 }

@@ -331,8 +331,8 @@ async function main() {
         overlay,
         `({
         drawn: window.__overlayDrawn ?? [],
-        head: document.querySelector('.overlay-panel-head')?.textContent ?? '',
-        panel: !!document.querySelector('.overlay-panel'),
+        head: window.__overlayAdvice ? window.__overlayAdvice.hero + ' · round ' + window.__overlayAdvice.round + ', choice ' + window.__overlayAdvice.choice : '',
+        panel: !!window.__overlayAdvice,
         ap: !!document.querySelector('.ap'),
         now: [...document.querySelectorAll('.ap-col')].flatMap((c) => [
           ...[...c.querySelectorAll('.ap-pill[data-state="now"]')].map(
@@ -340,9 +340,8 @@ async function main() {
           ),
         ]).sort(),
         done: document.querySelectorAll('.ap-pill[data-state="done"]').length,
-        cards: [...document.querySelectorAll('.overlay-panel-card')].map((e) => e.textContent).join(' | '),
-        scores: [...document.querySelectorAll('.overlay-panel-card')]
-          .map((e) => (e.textContent || '').match(/ · (-?[0-9.]+) ·/)?.[1]).filter(Boolean),
+        cards: (window.__overlayAdvice?.ranked ?? []).map((r) => r.name).join(' | '),
+        scores: (window.__overlayAdvice?.ranked ?? []).map((r) => r.score.toFixed(2)),
       })`,
       );
 
@@ -355,6 +354,29 @@ async function main() {
       `clicked=${clicked} title=${win?.getTitle()}`,
     );
     if (!win) return finish(1);
+    // Frameless control window with its own 32 px strip, no menu; a drag region that buttons are excluded from.
+    const strip = await js(
+      control,
+      `(() => { const t = document.querySelector('.titlebar'); if (!t) return null; const cs = getComputedStyle(t);
+        const b = document.querySelector('.titlebar-btn');
+        return { h: t.getBoundingClientRect().height, drag: cs.webkitAppRegion, btn: getComputedStyle(b).webkitAppRegion,
+          name: t.textContent, sel: getComputedStyle(document.body).userSelect }; })()`,
+    );
+    const cb = control.getBounds(),
+      cc = control.getContentBounds();
+    check(
+      'titlebar-frameless',
+      !!strip &&
+        strip.h === 32 &&
+        strip.drag === 'drag' &&
+        strip.btn === 'no-drag' &&
+        strip.name.includes('Deadlock Street Brawl Helper') &&
+        strip.sel === 'none' &&
+        Math.abs(cb.width - cc.width) <= 2 &&
+        Math.abs(cb.height - cc.height) <= 2 &&
+        !control.isMenuBarVisible(),
+      `strip=${JSON.stringify(strip)} bounds=${JSON.stringify(cb)} content=${JSON.stringify(cc)} menu=${control.isMenuBarVisible()}`,
+    );
     const namesOf = (l) => Object.values(l.cards);
     const waitAdvice = async (label, round, choice, timeoutMs) => {
       let last = null;
@@ -435,8 +457,47 @@ async function main() {
     check('boxes-choice1', boxesOk, detail.join(' '));
     if (vid && bestPos) {
       await js(overlay, 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
-      const px = await checkPixels(overlay, c1, vid, bestPos, 'choice1');
+      const cards = cur.drawn.filter((d) => d.plate && (d.kind === 'best' || d.kind === 'card'));
+      const px = await checkPixels(overlay, { cards, frameW: vid.w, frameH: vid.h }, bestPos);
       check('pixels-choice1', px.pass, px.detail);
+
+      // Hover: a mouse move over the best plate opens the score breakdown within 150 ms; leaving closes it. The overlay
+      // keeps ignoring mouse events (click-through) throughout.
+      const bestDrawn = cards.find((d) => d.card === bestPos);
+      const ovSize = await js(overlay, '({ w: window.innerWidth, h: window.innerHeight })');
+      const hx = Math.round(((bestDrawn.plate.x0 + bestDrawn.plate.x1) / 2) * (ovSize.w / vid.w));
+      const hy = Math.round(((bestDrawn.plate.y0 + bestDrawn.plate.y1) / 2) * (ovSize.h / vid.h));
+      const t0 = Date.now();
+      overlay.webContents.sendInputEvent({ type: 'mouseMove', x: hx, y: hy });
+      const tip = await waitFor(
+        () =>
+          js(
+            overlay,
+            `document.querySelector('.overlay-tip') ? [...document.querySelectorAll('.overlay-tip .tip-head, .overlay-tip .tip-row')].map((e) => e.textContent) : null`,
+          ),
+        1_000,
+        10,
+      );
+      const tipMs = Date.now() - t0;
+      const tipRows = tip ?? [];
+      const tipTotal = Number((tipRows[tipRows.length - 1] ?? '').replace('Score', '').trim());
+      check(
+        'tooltip-on-hover',
+        !!tip &&
+          tipMs <= 150 &&
+          tipRows.length >= 3 &&
+          tipRows[0].includes(c1.cards[bestPos]) &&
+          tipRows.some((r) => r.startsWith('Score')) &&
+          cur.scores.includes(tipTotal.toFixed(2)),
+        `${tipMs}ms rows=${JSON.stringify(tipRows)}`,
+      );
+      overlay.webContents.sendInputEvent({ type: 'mouseMove', x: 1, y: 1 });
+      const tipGone = await waitFor(() => js(overlay, `!document.querySelector('.overlay-tip')`), 1_000, 10);
+      check(
+        'tooltip-leaves',
+        !!tipGone && !!e2e.overlayIgnoresMouseEvents,
+        `gone=${!!tipGone} ignoresMouse=${e2e.overlayIgnoresMouseEvents}`,
+      );
     }
 
     // Forced re-roll box (no frame naturally verdicts RE-ROLL).
@@ -536,6 +597,42 @@ async function main() {
     );
     check('panel-ends-on-draft', !!ended, `drawn kinds=${JSON.stringify(ended?.drawn.map((r) => r.kind) ?? null)}`);
 
+    // --- the control window stays where it is put (capture on, test mode on, draft showing) ---
+    {
+      const spots = [
+        { x: 40, y: 50, width: 460, height: 640 },
+        { x: 220, y: 120, width: 520, height: 600 },
+        { x: 80, y: 30, width: 400, height: 500 },
+      ];
+      const reads = [];
+      let same = true;
+      for (const sp of spots) {
+        control.setBounds(sp);
+        await sleep(250);
+        const b = control.getBounds();
+        reads.push(b);
+        if (
+          Math.abs(b.x - sp.x) > 2 ||
+          Math.abs(b.y - sp.y) > 2 ||
+          Math.abs(b.width - sp.width) > 2 ||
+          Math.abs(b.height - sp.height) > 2
+        )
+          same = false;
+      }
+      await sleep(3_000);
+      const last = control.getBounds(),
+        want = spots[2];
+      // DIP->physical rounding at fractional display scale (125%) moves values by 1-2 px; what matters is no drift afterwards.
+      const first = reads[2];
+      const stable =
+        last.x === first.x && last.y === first.y && last.width === first.width && last.height === first.height;
+      check(
+        'window-bounds-stable',
+        same && stable,
+        `set=${JSON.stringify(spots)} read=${JSON.stringify(reads)} after3s=${JSON.stringify(last)} scale=${require('electron').screen.getPrimaryDisplay().scaleFactor}`,
+      );
+    }
+
     // --- off ---
     await js(control, CLICK_TEST_MODE_JS);
     const closed = await waitFor(() => !e2e.getTestWindow(), 6_000);
@@ -586,44 +683,34 @@ function scaleBox(box, scale) {
   return { x0: box.x0 * scale, y0: box.y0 * scale, x1: box.x1 * scale, y1: box.y1 * scale };
 }
 
-async function checkPixels(overlay, label, vidSize, expectedBestPos, frameName) {
-  const canvasSize = await overlay.webContents.executeJavaScript(
-    '(() => { const c = document.querySelector("canvas"); return c ? { w: c.width, h: c.height } : null; })()',
+// Reads the overlay canvas's own pixels (alpha-aware, unlike capturePage on a transparent window) and checks: the best
+// plate is filled teal, the other plates are not, the best card has a teal outline, the others have none.
+async function checkPixels(overlay, drawn, bestPos) {
+  const px = await overlay.webContents.executeJavaScript(
+    `(() => {
+      const c = document.querySelector('canvas');
+      const ctx = c.getContext('2d');
+      const at = (x, y) => Array.from(ctx.getImageData(Math.round(x), Math.round(y), 1, 1).data);
+      const sx = c.width / ${JSON.stringify(drawn.frameW)}, sy = c.height / ${JSON.stringify(drawn.frameH)};
+      return ${JSON.stringify(drawn.cards)}.map((d) => ({
+        card: d.card,
+        // inside the plate, 4 px from its right end, vertically centred: the fill, clear of the text
+        fill: at(d.plate.x1 * sx - 4, ((d.plate.y0 + d.plate.y1) / 2) * sy),
+        // on the card's outline: left edge of the card box, vertically centred
+        edge: [-1, 0, 1].map((dx) => at(d.x0 * sx + dx, ((d.y0 + d.y1) / 2) * sy)),
+      }));
+    })()`,
   );
-  if (!canvasSize) return { pass: false, detail: `${frameName}: no overlay canvas` };
-  const scaleFrameToCanvas = { x: canvasSize.w / vidSize.w, y: canvasSize.h / vidSize.h };
-  const scaleLabelToFrame = vidSize.w / 2000;
-  // The best circle's outline must be green and the other circles' outlines grey: look at the
-  // strongest pixel within a few px of the circle's leftmost point.
-  const img = await overlay.webContents.capturePage();
-  const imgSize = img.getSize();
-  const bitmap = img.toBitmap(); // BGRA on Windows
-  const sampleNear = (box) => {
-    const cx = box.x0 * scaleFrameToCanvas.x;
-    const cy = ((box.y0 + box.y1) / 2) * scaleFrameToCanvas.y;
-    const ix = Math.round(cx * (imgSize.width / canvasSize.w));
-    const iy = Math.round(cy * (imgSize.height / canvasSize.h));
-    let best = [0, 0, 0, 0];
-    for (let dx = -4; dx <= 4; dx++) {
-      const x = Math.min(Math.max(ix + dx, 0), imgSize.width - 1);
-      const y = Math.min(Math.max(iy, 0), imgSize.height - 1);
-      const idx = (y * imgSize.width + x) * 4;
-      const px = [bitmap[idx + 2], bitmap[idx + 1], bitmap[idx], bitmap[idx + 3]];
-      // strongest = most saturated-or-bright: green stroke beats its antialiased edge, grey beats background
-      const w = (p) => p[0] + p[1] + p[2] + 3 * (Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]));
-      if (w(px) > w(best)) best = px;
-    }
-    return best;
-  };
-  const bestPx = sampleNear(scaleBox(label.circles[expectedBestPos], scaleLabelToFrame));
-  const others = ['left', 'top', 'right'].filter((k) => k !== expectedBestPos);
-  const otherPx = others.map((k) => sampleNear(scaleBox(label.circles[k], scaleLabelToFrame)));
-  const isGreen = (p) => p[1] >= 170 && p[1] - p[0] >= 80 && p[1] - p[2] >= 80;
-  const isGrey = (p) => p[0] > 40 && Math.max(p[0], p[1], p[2]) - Math.min(p[0], p[1], p[2]) <= 30;
-  return {
-    pass: isGreen(bestPx) && otherPx.every(isGrey),
-    detail: `${frameName}: bestEdge=${JSON.stringify(bestPx)} otherEdges=${JSON.stringify(otherPx)}`,
-  };
+  const isTeal = (p) => p[3] > 200 && p[1] >= 150 && p[2] >= 140 && p[0] <= 90;
+  const best = px.find((p) => p.card === bestPos);
+  const others = px.filter((p) => p.card !== bestPos);
+  const pass =
+    !!best &&
+    isTeal(best.fill) &&
+    best.edge.some(isTeal) &&
+    others.length > 0 &&
+    others.every((o) => !isTeal(o.fill) && !o.edge.some(isTeal));
+  return { pass, detail: `best=${JSON.stringify(best)} others=${JSON.stringify(others)}` };
 }
 
 function finish(code) {

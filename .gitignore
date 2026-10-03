@@ -32,3 +32,6 @@ plans/
 # no secrets live in this repo, but keep an accidental one from ever being committed
 .env
 eng.traineddata
+
+# GitHub wiki (own git repo, cloned here)
+wiki/

@@ -29,10 +29,13 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.disableHardwareAcceleration();
 
 const ROOT = path.join(__dirname, '..', '..');
-const OUT_PATH = path.join(ROOT, 'logs', 'win-demo.png');
+
 const DEMO_HOLD_MS = 8_000; // how long to keep the windows open (for a person to look, or to Ctrl+C) after the screenshot
 
-const choiceArg = process.argv.includes('choice2') ? 'choice2' : 'choice1';
+// choice1 | choice2 (hero/round/choice from labels.json) or any other public/demo frame name, e.g. draft-r2c3-reroll
+// (the page takes round/choice from the frame itself). choice1/choice2 write logs/win-demo.png, others win-demo-<name>.png.
+const choiceArg = process.argv.slice(2).find((a) => /^[a-z0-9-]+$/i.test(a) && !a.startsWith('--')) ?? 'choice1';
+const OUT_PATH = path.join(ROOT, 'logs', /^choice[12]$/.test(choiceArg) ? 'win-demo.png' : `win-demo-${choiceArg}.png`);
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -103,7 +106,7 @@ async function main() {
   // path takes over.
   const control = e2e.getControl();
   const labels = JSON.parse(fs.readFileSync(path.join(ROOT, 'scripts', 'win', 'frames', 'labels.json'), 'utf8'));
-  const label = labels[choiceArg];
+  const label = labels[choiceArg] ?? null;
   await control.webContents.executeJavaScript('document.readyState === "complete"');
   await control.webContents.executeJavaScript(
     `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true }))`,
@@ -122,10 +125,12 @@ async function main() {
         return true;
       }
       const hero = document.querySelector('.hero-select');
-      const opt = hero && [...hero.options].find((o) => o.textContent.includes(${JSON.stringify(label.hero)}));
+      const opt = hero && ${JSON.stringify(label?.hero ?? null)} && [...hero.options].find((o) => o.textContent.includes(${JSON.stringify(label?.hero ?? '')}));
       if (opt) set('.hero-select', opt.value);
-      set('select[aria-label="Round"]', ${label.round});
-      set('select[aria-label="Choice"]', ${label.choice});
+      if (${JSON.stringify(!!label)}) {
+        set('select[aria-label="Round"]', ${label?.round ?? 1});
+        set('select[aria-label="Choice"]', ${label?.choice ?? 1});
+      }
     })();
   `);
   await sleep(500);
@@ -141,8 +146,13 @@ async function main() {
   // ".brawl-status" to exist -- that status div renders as soon as capture starts, well before the worker's
   // two-frame accept debounce (worker.ts) resolves cards -> advice -> a ranked best pick. Screenshotting on
   // the earlier signal raced ahead of recognition and produced a real-but-blank (no green box) frame.
+  // The overlay's own drawn list is the signal that matters here: a card plate (or, on a re-roll frame, the re-roll box).
+  const overlayWin = e2e.getOverlay();
   const drew = await waitFor(
-    () => control?.webContents.executeJavaScript('!!document.querySelector(".brawl-card.best")'),
+    () =>
+      overlayWin?.webContents.executeJavaScript(
+        'window.__overlayDrawn?.some((r) => r.kind === "reroll" || r.kind === "best") ?? false',
+      ),
     15_000,
   );
   if (!drew) console.error('WARNING: control window never ranked a best card before the screenshot deadline');
@@ -160,6 +170,12 @@ async function main() {
     return exit(1);
   }
   fs.writeFileSync(OUT_PATH, buf);
+  // Sidecar for check-demo-png.ts: what the overlay drew (frame px) and the captured frame's size.
+  const sidecar = await overlayWin.webContents.executeJavaScript('({ drawn: window.__overlayDrawn ?? [] })');
+  sidecar.frame = await control.webContents.executeJavaScript(
+    '(() => { const v = document.querySelector("video"); return v ? { w: v.videoWidth, h: v.videoHeight } : null; })()',
+  );
+  fs.writeFileSync(OUT_PATH.replace(/\.png$/, '.json'), JSON.stringify(sidecar));
   console.log(`saved ${OUT_PATH}`);
   console.log(`demo running (${choiceArg}) — Ctrl+C to close, or it closes itself in ${DEMO_HOLD_MS}ms`);
   await sleep(DEMO_HOLD_MS);

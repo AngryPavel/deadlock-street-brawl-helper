@@ -18,10 +18,12 @@ powershell.exe -NoProfile -Command \
 EXIT_CODE=$?
 
 mkdir -p "$REPO_ROOT/logs"
-if [ -f "$WIN_COPY/logs/win-demo.png" ]; then
-  cp "$WIN_COPY/logs/win-demo.png" "$REPO_ROOT/logs/win-demo.png"
+case "$CHOICE" in choice1|choice2) OUT="win-demo.png" ;; *) OUT="win-demo-$CHOICE.png" ;; esac
+if [ -f "$WIN_COPY/logs/$OUT" ]; then
+  cp "$WIN_COPY/logs/$OUT" "$REPO_ROOT/logs/$OUT"
+  cp "$WIN_COPY/logs/${OUT%.png}.json" "$REPO_ROOT/logs/${OUT%.png}.json" 2>/dev/null || true
 else
-  echo "ERROR: no screenshot at $WIN_COPY/logs/win-demo.png" >&2
+  echo "ERROR: no screenshot at $WIN_COPY/logs/$OUT" >&2
   EXIT_CODE=1
 fi
 

@@ -3,6 +3,7 @@ import type { Ability, Hero, Item } from './types';
 import { img, loadCore, type Manifest } from './data/load';
 import { BrawlView } from './components/BrawlView';
 import { TierList } from './components/TierList';
+import { TitleBar } from './components/TitleBar';
 import { usePersisted, isNumber, isString } from './hooks/usePersisted';
 
 const INFERNUS = 1;
@@ -59,8 +60,20 @@ export default function App() {
 
   const hero = heroes.find((h) => h.id === heroId);
 
-  if (error) return <div className="error">{error}</div>;
-  if (!hero) return <div className="loading">Loading snapshots…</div>;
+  if (error)
+    return (
+      <>
+        <TitleBar />
+        <div className="error">{error}</div>
+      </>
+    );
+  if (!hero)
+    return (
+      <>
+        <TitleBar />
+        <div className="loading">Loading snapshots…</div>
+      </>
+    );
 
   const fetchedAt = manifest?.brawl?.fetched_at ?? manifest?.fetched_at;
   const fetchedDate = fetchedAt?.slice(0, 10);
@@ -69,6 +82,7 @@ export default function App() {
 
   return (
     <>
+      <TitleBar />
       <header className="app-header">
         {tab === 'advisor' && <img className="hero-portrait" src={img(hero.images.small)} alt="" />}
         <div>

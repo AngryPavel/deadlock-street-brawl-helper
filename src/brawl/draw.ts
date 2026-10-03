@@ -9,6 +9,10 @@ export interface OverlayAdviceCard {
   enhanced: boolean;
   usage: number;
   winRate: number | null;
+  /** Tier-list letter ("S".."C"), "-" when the item has none. */
+  grade: string;
+  /** Tooltip rows: fixed labels and hundredths (see `breakdownRows`); one "No Street Brawl data" row without data. */
+  rows: { label: string; cents: number }[];
 }
 
 /** Everything the overlay panel needs to render the same advice as the pop-out, without alt-tabbing:
@@ -58,12 +62,15 @@ export { overlayHasContent } from './overlayContent';
  *  circle the item sits in; `score` is the number drawn above it (null for the re-roll box). */
 export interface DrawnRect {
   kind: 'card' | 'best' | 'reroll';
+  itemId: number | null;
   card: string | null; // read.card ("left"/"top"/"right") for card/best, null for reroll
   x0: number;
   y0: number;
   x1: number;
   y1: number;
   score: number | null;
+  /** The plate above the card (frame px); null for the re-roll box or a card without a score. */
+  plate: FrameRect | null;
 }
 
 // The large circle an item sits in, relative to the small icon square the recogniser matches: measured on
@@ -87,20 +94,54 @@ export function itemCircle(match: { x: number; y: number; edge: number }): Circl
   };
 }
 
-/** Circle of the item to take. */
-export const COLOR_BEST_CIRCLE = '#22e055';
-/** Score text of the item to take. */
-export const COLOR_BEST_TEXT = '#ffffff';
-export const COLOR_OTHER = 'rgba(170,170,170,.85)';
-const COLOR_REROLL = '#ffb020';
+/** Overlay palette (charcoal + teal). The CSS variables in `src/index.css` are the source; these are the same values
+ *  for the canvas, read from the document when there is one. */
+export interface OverlayTheme {
+  panel: string;
+  teal: string;
+  tealInk: string;
+  text: string;
+  muted: string;
+}
+const DEFAULT_THEME: OverlayTheme = {
+  panel: 'rgba(16,19,20,0.85)',
+  teal: '#2ec4b6',
+  tealInk: '#06201d',
+  text: '#ece6da',
+  muted: '#a39e92',
+};
+export function readTheme(): OverlayTheme {
+  if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return DEFAULT_THEME;
+  const cs = getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback;
+  return {
+    panel: v('--overlay-panel', DEFAULT_THEME.panel),
+    teal: v('--teal', DEFAULT_THEME.teal),
+    tealInk: v('--teal-ink', DEFAULT_THEME.tealInk),
+    text: v('--text', DEFAULT_THEME.text),
+    muted: v('--muted', DEFAULT_THEME.muted),
+  };
+}
 
-/** Draws the item circles, scores and (on RE-ROLL) the re-roll box for the current card reads, scaled from
- *  capture-frame pixels to the target canvas size. Shared by the preview canvas (BrawlView) and the Electron
- *  overlay window. Each present card gets an outline around its large circle with `Score: <n>` above it; the
- *  best card has a green circle and white score text, the rest are grey. When `reroll` is true, no card is green (the engine says re-roll, not
- *  take): the "Use Re-Roll" button is boxed instead. `scores` maps itemId to the score the advice panel shows.
- *  Returns every shape actually stroked, in frame px, for callers (e.g. the e2e harness) that need to verify
- *  what was drawn without re-deriving it from the reads. */
+export interface FrameRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') ctx.roundRect(x, y, w, h, r);
+  else ctx.rect(x, y, w, h);
+}
+
+/** Draws the plate above every offered card (tier badge + `Score: <n>`) and the 3 px teal outline around the best card,
+ *  scaled from capture-frame pixels to the target canvas size. Shared by the preview canvas (BrawlView) and the Electron
+ *  overlay window. The best card's plate is filled teal with dark text, the others are charcoal with a thin teal border
+ *  and muted text. When `reroll` is true no card is best (the engine says re-roll, not take) and the "Use Re-Roll"
+ *  button is boxed instead. `scores`/`grades` map itemId to what the advice shows. Returns every shape drawn, in frame
+ *  px, for callers (the hover tooltip, the e2e harness) that need to know where things landed. */
 export function drawReads(
   ctx: CanvasRenderingContext2D,
   reads: CardRead[],
@@ -111,36 +152,64 @@ export function drawReads(
   frameH: number,
   reroll = false,
   scores: Record<number, number> = {},
-  rerollRect: { x0: number; y0: number; x1: number; y1: number } | null = null,
+  rerollRect: FrameRect | null = null,
+  grades: Record<number, string> = {},
+  theme: OverlayTheme = readTheme(),
 ): DrawnRect[] {
   const drawn: DrawnRect[] = [];
   for (const read of reads) {
     if (!read.present) continue;
     const isBest = !reroll && read.itemId === bestId;
     const { cx, cy, r } = itemCircle(read.match);
-    ctx.lineWidth = isBest ? 5 : 3;
-    ctx.strokeStyle = isBest ? COLOR_BEST_CIRCLE : COLOR_OTHER;
-    ctx.beginPath();
-    ctx.ellipse(cx * scaleX, cy * scaleY, r * scaleX, r * scaleY, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    const box = { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r };
+    if (isBest) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = theme.teal;
+      roundedRect(ctx, box.x0 * scaleX, box.y0 * scaleY, (box.x1 - box.x0) * scaleX, (box.y1 - box.y0) * scaleY, 4);
+      ctx.stroke();
+    }
     const score = scores[read.itemId];
+    let plate: FrameRect | null = null;
     if (score !== undefined) {
-      ctx.fillStyle = isBest ? COLOR_BEST_TEXT : COLOR_OTHER;
-      ctx.font = `bold ${Math.max(12, Math.round(read.match.edge * 0.26 * scaleY))}px sans-serif`;
+      const font = Math.max(14, Math.round(read.match.edge * 0.2 * scaleY));
+      const h = Math.round(font * 1.7);
+      const label = `Score: ${score.toFixed(2)}`;
+      ctx.font = `bold ${font}px sans-serif`;
+      const textW = ctx.measureText(label).width;
+      const pad = Math.round(font * 0.5);
+      const w = Math.round(h + textW + pad * 2);
+      const x = Math.round(cx * scaleX - w / 2);
+      const y = Math.max(2, Math.round(box.y0 * scaleY - h - Math.max(4, read.match.edge * 0.04 * scaleY)));
+      ctx.fillStyle = isBest ? theme.teal : theme.panel;
+      roundedRect(ctx, x, y, w, h, 4);
+      ctx.fill();
+      if (!isBest) {
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = theme.teal;
+        roundedRect(ctx, x + 0.5, y + 0.5, w - 1, h - 1, 4);
+        ctx.stroke();
+      }
+      // tier badge: a square at the left end, a darker cell so the letter reads at a glance
+      ctx.fillStyle = isBest ? theme.tealInk : theme.teal;
+      roundedRect(ctx, x + 2, y + 2, h - 4, h - 4, 3);
+      ctx.fill();
+      ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(`Score: ${score.toFixed(2)}`, cx * scaleX, Math.max(14, (cy - r) * scaleY - 6));
+      ctx.fillStyle = isBest ? theme.teal : theme.tealInk;
+      ctx.fillText(grades[read.itemId] ?? '-', x + h / 2, y + h / 2 + 1);
       ctx.textAlign = 'start';
+      ctx.fillStyle = isBest ? theme.tealInk : theme.muted;
+      ctx.fillText(label, x + h + pad, y + h / 2 + 1);
       ctx.textBaseline = 'alphabetic';
+      plate = { x0: x / scaleX, y0: y / scaleY, x1: (x + w) / scaleX, y1: (y + h) / scaleY };
     }
     drawn.push({
       kind: isBest ? 'best' : 'card',
+      itemId: read.itemId,
       card: read.card,
-      x0: cx - r,
-      y0: cy - r,
-      x1: cx + r,
-      y1: cy + r,
+      ...box,
       score: score ?? null,
+      plate,
     });
   }
   if (reroll) {
@@ -149,15 +218,44 @@ export function drawReads(
       y0 = rect.y0 * scaleY,
       x1 = rect.x1 * scaleX,
       y1 = rect.y1 * scaleY;
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = COLOR_REROLL;
-    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-    ctx.fillStyle = COLOR_REROLL;
-    ctx.font = 'bold 13px sans-serif';
-    ctx.fillText('RE-ROLL', x0, Math.max(12, y0 - 6));
-    drawn.push({ kind: 'reroll', card: null, x0: rect.x0, y0: rect.y0, x1: rect.x1, y1: rect.y1, score: null });
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = theme.teal;
+    roundedRect(ctx, x0, y0, x1 - x0, y1 - y0, 4);
+    ctx.stroke();
+    ctx.font = 'bold 14px sans-serif';
+    const w = ctx.measureText('RE-ROLL').width + 16;
+    const ly = Math.max(2, y0 - 28);
+    ctx.fillStyle = theme.panel;
+    roundedRect(ctx, x0, ly, w, 24, 4);
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = theme.teal;
+    roundedRect(ctx, x0 + 0.5, ly + 0.5, w - 1, 23, 4);
+    ctx.stroke();
+    ctx.fillStyle = theme.text;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('RE-ROLL', x0 + 8, ly + 13);
+    ctx.textBaseline = 'alphabetic';
+    drawn.push({
+      kind: 'reroll',
+      itemId: null,
+      card: null,
+      x0: rect.x0,
+      y0: rect.y0,
+      x1: rect.x1,
+      y1: rect.y1,
+      score: null,
+      plate: null,
+    });
   }
   return drawn;
+}
+
+/** itemId -> tier letter map from the advice ranking. */
+export function gradesFromAdvice(advice: OverlayAdvice | null): Record<number, string> {
+  const out: Record<number, string> = {};
+  for (const r of advice?.ranked ?? []) out[r.itemId] = r.grade;
+  return out;
 }
 
 /** itemId -> score map from the advice ranking, so drawn scores are exactly the panel's numbers. */

@@ -31,7 +31,16 @@ import {
 } from '../brawl';
 import { createPerf } from '../perf';
 import type { FrameRegion, WorkerIn, WorkerOut } from '../brawl/worker';
-import { BLANK_OVERLAY, drawReads, scoresFromAdvice, type OverlayAdvice, type OverlayState } from '../brawl/draw';
+import {
+  BLANK_OVERLAY,
+  drawReads,
+  gradesFromAdvice,
+  scoresFromAdvice,
+  type OverlayAdvice,
+  type OverlayState,
+} from '../brawl/draw';
+import { breakdownRows } from '../brawl/breakdown';
+import { itemTiers, type BrawlTierListData } from '../brawl/tierlist';
 import { AbilityPanel } from './AbilityPanel';
 import { ItemTile } from './ItemTile';
 import { log } from '../log';
@@ -130,6 +139,17 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const rankedRef = useRef<RankedOffer[]>([]);
   const rerollRef = useRef<RerollAdvice | null>(null);
   const overlayAdviceRef = useRef<OverlayAdvice | null>(null);
+  // Tier-list letter per item (S/A/B/C), shown in the badge on each plate.
+  const [tierData, setTierData] = useState<BrawlTierListData | null>(null);
+  useEffect(() => {
+    j<BrawlTierListData>('analytics/brawl/tier-list.json')
+      .then(setTierData)
+      .catch((e) => log('brawl-view', 'warn', 'tierlist.load.fail', { message: String(e) }));
+  }, []);
+  const gradeById = useMemo(
+    () => new Map(tierData ? itemTiers(tierData, items).map((r) => [r.subject.id, r.grade as string]) : []),
+    [tierData, items],
+  );
   const previewRef = useRef<HTMLCanvasElement | null>(null);
   const roundRef = useRef(round);
   const choiceRef = useRef(choice);
@@ -253,6 +273,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
             enhanced: r.enhanced,
             usage: r.usage,
             winRate: r.winRate,
+            grade: gradeById.get(r.item.id) ?? '-',
+            rows: breakdownRows(r.parts, r.score, r.known),
           })),
           status,
         }
@@ -261,7 +283,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     tipRef.current = tip;
     pushOverlay();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pushOverlay only reads refs
-  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status]);
+  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById]);
 
   const stopCapture = useCallback(() => {
     captureGenRef.current += 1;
@@ -680,6 +702,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
             srcH,
             rerollNow,
             scoresFromAdvice(overlayAdviceRef.current),
+            null,
+            gradesFromAdvice(overlayAdviceRef.current),
           );
         }
       }

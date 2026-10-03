@@ -13,7 +13,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { writeFileSync, existsSync, readdirSync } from 'node:fs';
+import { writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import {
   findGameWindow,
   grabScreenRegion,
@@ -25,6 +25,7 @@ import {
 } from './gameWindow';
 import { probeShopScreen } from './shopProbe';
 import { CHANNELS } from './channels';
+import { MIN_HEIGHT, MIN_WIDTH, isBounds, validBounds } from './windowBounds';
 import { overlayHasContent } from '../src/brawl/overlayContent';
 import { log } from '../src/log';
 import { createPerf } from '../src/perf';
@@ -155,10 +156,49 @@ function logPreloadErrors(win: BrowserWindow) {
   });
 }
 
+const WINDOW_BG = '#101314'; // charcoal: the window's colour before the page paints, so there is no white flash
+const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
+
+function loadSavedBounds(): Electron.Rectangle {
+  const displays = screen.getAllDisplays().map((d) => d.bounds);
+  let saved: unknown = null;
+  if (!process.env.BRAWL_E2E) {
+    try {
+      saved = JSON.parse(readFileSync(stateFile(), 'utf8'));
+    } catch {
+      /* first launch or unreadable: use the default */
+    }
+  }
+  return validBounds(saved, displays, screen.getPrimaryDisplay().workArea);
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Remembers the control window's size and position (debounced). Not while test mode has it parked beside the dummy. */
+function scheduleSaveBounds() {
+  if (process.env.BRAWL_E2E || controlBoundsBeforeTest) return;
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    if (!alive(control) || control.isMinimized() || controlBoundsBeforeTest) return;
+    const b = control.getNormalBounds();
+    if (isBounds(b)) {
+      try {
+        writeFileSync(stateFile(), JSON.stringify(b));
+      } catch (err) {
+        log('electron-main', 'warn', 'window.state.save.fail', { message: String(err) });
+      }
+    }
+  }, 500);
+}
+
 function createControlWindow() {
   control = new BrowserWindow({
-    width: 420,
-    height: 380,
+    ...loadSavedBounds(),
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
+    frame: false, // the page draws its own title strip (src/components/TitleBar.tsx); no Windows title bar or menu
+    backgroundColor: WINDOW_BG,
+    title: 'Deadlock Street Brawl Helper',
     show: !process.env.BRAWL_E2E,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -166,6 +206,25 @@ function createControlWindow() {
       nodeIntegration: false,
       backgroundThrottling: false, // the capture loop runs here while the game is in front of this window
     },
+  });
+  control.setMenuBarVisibility(false);
+  control.removeMenu();
+  control.on('resize', scheduleSaveBounds);
+  control.on('move', scheduleSaveBounds);
+  // A drag must only move the window: if the system changes its size mid-drag (display scaling rounding), put it back.
+  let dragSize: [number, number] | null = null;
+  control.on('will-move', () => {
+    dragSize ??= control!.getSize() as [number, number];
+  });
+  control.on('moved', () => {
+    if (dragSize && alive(control)) {
+      const [w, h] = control.getSize();
+      if (w !== dragSize[0] || h !== dragSize[1]) {
+        log('electron-main', 'warn', 'window.drag.resized', { before: dragSize, after: [w, h] });
+        control.setSize(dragSize[0], dragSize[1]);
+      }
+    }
+    dragSize = null;
   });
   logPreloadErrors(control);
   if (process.env.BRAWL_E2E) {
@@ -583,6 +642,8 @@ function setupIpc() {
     captureWanted = false;
     emitCaptureState();
   });
+  ipcMain.on(CHANNELS.windowMinimize, () => alive(control) && control.minimize());
+  ipcMain.on(CHANNELS.windowClose, () => alive(control) && control.close());
   ipcMain.handle(CHANNELS.platformWarning, () => platformWarning());
   ipcMain.handle(CHANNELS.testModeGet, () => testState());
   ipcMain.handle(CHANNELS.testModeSet, (_e, on: boolean) => (on ? startTestMode() : stopTestMode()));
