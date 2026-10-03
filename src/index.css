@@ -1337,13 +1337,12 @@ footer {
   color: rgb(30, 30, 30);
   font-size: calc(18 * var(--u));
 }
-/* On the game: bottom-centre, above the ability bar (which starts ~90 % down), 22 % of the window wide. */
+/* On the game: bottom-left corner, 22 % of the window wide. */
 .overlay-ap {
   --u: 0.04536vw;
   position: fixed;
-  left: 50%;
-  bottom: 12.5%;
-  transform: translateX(-50%);
+  left: 1%;
+  bottom: 2%;
 }
 .ap-control {
   --u: 0.8px;
