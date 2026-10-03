@@ -5,8 +5,9 @@ import { itemByName } from '../../src/brawl/__tests__/testData';
 describe('brawl-cli --json', () => {
   it('picks Improved Spirit and does not suggest a reroll for the README example', () => {
     const out = execFileSync(
-      'npx',
+      process.execPath, // not npx: spawning it without a shell fails on Windows runners
       [
+        '--import',
         'tsx',
         'scripts/brawl-cli.ts',
         '--hero',
