@@ -168,7 +168,8 @@ export function drawReads(
     if (isBest) {
       ctx.lineWidth = 3;
       ctx.strokeStyle = theme.teal;
-      roundedRect(ctx, box.x0 * scaleX, box.y0 * scaleY, (box.x1 - box.x0) * scaleX, (box.y1 - box.y0) * scaleY, 4);
+      ctx.beginPath();
+      ctx.ellipse(cx * scaleX, cy * scaleY, r * scaleX, r * scaleY, 0, 0, Math.PI * 2);
       ctx.stroke();
     }
     const score = scores[read.itemId];

@@ -44,7 +44,7 @@ Repo constitution for planner / worker / evaluator agents. Overrides generic sta
   the overlay's own composited output to `logs/win-demo.png`. Refuses to run if a real "Deadlock" window is
   already open (same guard as `win:e2e`). Verify with `npx tsx scripts/win/check-demo-png.ts logs/win-demo.png`
   (`frame-visible: true`, `plates-placed: true`, `teal-on-best: true`, `teal-on-non-best: false`; every offered card has a plate with its tier
-  letter and `Score: <n>` above it; the item to take has a teal-filled plate and a 3 px teal outline, the others a charcoal plate with a thin teal border).
+  letter and `Score: <n>` above it; the item to take has a teal-filled plate and a 3 px teal circle outline, the others a charcoal plate with a thin teal border).
   It also writes `logs/win-demo.json` (what the overlay drew). Any `public/demo` frame name works, e.g. `win:demo -- draft-r2c3-reroll` -> `logs/win-demo-<name>.png` or by opening the PNG. Nothing is
   visible on the desktop while this runs: it sets `BRAWL_E2E=1` internally (to reach the `__brawlE2E` test
   hook), which keeps the dummy at the bottom of the z-order and the overlay at opacity 0. `logs/win-demo.png`

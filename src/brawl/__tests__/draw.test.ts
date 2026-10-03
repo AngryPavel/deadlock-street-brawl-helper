@@ -24,6 +24,7 @@ function stubCtx() {
   const ctx = {
     rect: vi.fn(),
     roundRect: vi.fn(),
+    ellipse: vi.fn(),
     beginPath: vi.fn(),
     stroke: vi.fn(),
     fill: vi.fn(),
@@ -51,10 +52,10 @@ const run = (ctx: CanvasRenderingContext2D, reroll = false, sx = 1, sy = 1) =>
   drawReads(ctx, [read(1, 10), read(2, 200)], 1, sx, sy, 2560, 1440, reroll, SCORES, null, GRADES, THEME);
 
 describe('drawReads', () => {
-  it('draws no circles: only rounded rects and fills', () => {
+  it('outlines only the best card, as a circle', () => {
     const ctx = stubCtx();
     run(ctx);
-    expect((ctx as unknown as { ellipse?: unknown }).ellipse).toBeUndefined();
+    expect(ctx.ellipse).toHaveBeenCalledTimes(1);
   });
 
   it('puts a plate above each card, centred on it, with the tier letter and "Score: <n>"', () => {
