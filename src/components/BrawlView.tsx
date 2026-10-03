@@ -107,6 +107,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   // A running Detect now try: pressed-at time; the first frame result decides hit or miss.
   const detectMissesRef = useRef(0);
   const lastReadSigRef = useRef('');
+  const unreadFramesRef = useRef(0);
   const fullCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const detectRef = useRef<{ at: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [took_, setTook] = useState<string>('');
@@ -908,13 +909,22 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         }
       }
       const heroDetected = r.accepted && r.meta!.self && r.meta!.self === heroId;
+      // A card the recogniser cannot read (usually a hover tooltip covering it) must not leave the previous
+      // screen's advice up: after three such frames of a new card set, drop the old cards.
+      if (r.shop && !r.accepted && seen < 3 && r.key !== acceptedKeyRef.current) {
+        if (++unreadFramesRef.current >= 3 && cardsRef.current.length) {
+          cardsRef.current = [];
+          setCards([]);
+        }
+      } else unreadFramesRef.current = 0;
+      const hidden = r.shop && seen < 3 ? ' · move the mouse off the cards' : '';
       const names = !r.shop
         ? 'waiting for the shop'
         : seen === 3
           ? r.reads.map((x) => byId.get(x.itemId)?.name ?? '?').join(' / ')
           : heroDetected
-            ? `hero: ${hero.name} · ${seen}/3 cards found`
-            : `${seen}/3 cards found`;
+            ? `hero: ${hero.name} · ${seen}/3 cards found${hidden}`
+            : `${seen}/3 cards found${hidden}`;
       setStatus(names);
     };
     w.addEventListener('message', onMessage);
