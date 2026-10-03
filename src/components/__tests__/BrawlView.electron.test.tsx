@@ -182,3 +182,39 @@ describe('BrawlView (Electron, real game: capture only around the draft)', () =>
     expect(container.querySelector('.chip, canvas, .brawl-preview, img')).toBeNull();
   });
 });
+
+describe('BrawlView (Electron, Detect now press)', () => {
+  it('shows Detecting… when main sends detect-run, and the button is enabled with a game', async () => {
+    const api = (window as unknown as { brawlAPI: Record<string, unknown> }).brawlAPI;
+    let runCb: (() => void) | undefined;
+    api.getGameRect = () => Promise.resolve({ x: 0, y: 0, width: 1920, height: 1080 });
+    api.onDetectRun = (cb: () => void) => {
+      runCb = cb;
+      return () => {};
+    };
+    api.detectNow = vi.fn(() => Promise.resolve(true));
+    captureState = { wanted: false, probe: true };
+    (navigator as unknown as { mediaDevices: unknown }).mediaDevices = {
+      getDisplayMedia: vi.fn(() => new Promise(() => {})), // pending: capture is starting
+    };
+    const heroes = readJson('heroes.json') as Hero[];
+    const items = readJson('items.json') as Item[];
+    const abilities = readJson('abilities.json') as Ability[];
+    render(
+      <BrawlView
+        hero={heroes.find((h) => h.id === 1)!}
+        heroes={heroes}
+        items={items}
+        abilities={abilities}
+        onHero={() => {}}
+      />,
+    );
+    const detect = (await screen.findByRole('button', { name: /detect now \(f8\)/i })) as HTMLButtonElement;
+    await waitFor(() => expect(detect.disabled).toBe(false));
+    detect.click();
+    expect(api.detectNow).toHaveBeenCalled();
+    expect(runCb).toBeTypeOf('function');
+    runCb!();
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Detecting'));
+  });
+});

@@ -385,7 +385,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     const gen = ++captureGenRef.current;
     try {
       setCapture('starting');
-      setStatus('loading icon index…');
+      if (!detectRef.current) setStatus('loading icon index…');
       if (workerRef.current && workerStartedRef.current)
         workerRef.current.postMessage({ type: 'reset' } satisfies WorkerIn);
       else {
@@ -420,7 +420,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       if (gen !== captureGenRef.current) return; // superseded during the await above
       setCapture('on');
       window.brawlAPI?.captureResult?.(true);
-      setStatus('watching for the draft screen');
+      if (!detectRef.current) setStatus('watching for the draft screen');
       log('brawl-view', 'info', 'capture.start');
       // Electron already draws its own always-on-top overlay window (electron/main.ts); the in-page
       // Document-PiP overlay is only for the browser path.
