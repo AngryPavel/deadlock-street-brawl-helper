@@ -1,0 +1,9 @@
+- [Street Brawl plan round 1](project_street_brawl_plan_round1.md) — passed 7/7 on paper; CORRECTED: the callback({}) deny path actually crashes Electron capture at runtime, caught only after user manual test
+- [Hero-capture/reroll plan round 1](project_street_brawl_hero_capture_reroll_plan_round1.md) — passed 7/7; item-3 endpoint mismatch is a plan wording gap (tier-list.json), not a defect
+- [Feedback: verify Electron IPC handlers at runtime](feedback_electron_runtime_verification.md) — typecheck/grep is not enough for setDisplayMediaRequestHandler-style callbacks; attempt a real launch or mark BLOCKED
+- [Feedback: win:e2e harness hazards](feedback_win_e2e_harness_hazards.md) — kill-by-title fixed (e4ebb06); overlay-panel flakes ~2/7, run 6+ times; demo visibility is BLOCKED-only
+- [Visible test mode wanted](project_visible_test_mode_wanted.md) — 2026-09-19: user wants an on-screen dummy "Deadlock" test mode, circle boxes, per-item scores; PNG-only demo rejected
+- [Harness plan round 7](project_harness_plan_round7.md) — user rejected: magenta fake window in capture-found pops over their windows; plan_gap, loop exhausted
+- [Test-mode plan round 1](project_testmode_plan_round1.md) — 2026-09-19: test mode accepted; replan because user now wants green circle + "Score: " prefix instead of white
+- [Release plan round 1](project_release_plan_round1.md) — 2026-10-03: checks passed but user wants HDT-style redesign + window move/resize fix; replan
+- [HDT overlay plan round 1](project_hdt_overlay_plan_round1.md) — 2026-10-03: drag works; replan for subtle in-game 'app running' indicator incl. lobby

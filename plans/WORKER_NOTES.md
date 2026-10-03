@@ -1,20 +1,17 @@
-# Worker notes
+# Worker notes (Detect now F8 + lobby status dot)
 
-Launch: `npm run win:dev` from WSL, press **Test mode**, pick a screenshot (draft-r1c2, draft-r2c1, then `gameplay` for the ability panel).
+Launch: `npm run win:dev` (button next to Start capture; F8 once a Deadlock/test-mode window exists). `npm run win:e2e`, `npm run win:demo -- choice1`.
 
-## Acceptance
-- Round 1 panel highlights 6 points' worth of pills; round 2 shows round 1's as bought + 6 new: MET in code/tests (`abilityPanel.test.ts`) and in e2e `ability-panel-appears` (overlay pills == control-window pills, 4 pills = 6 points on demo hero). Not looked at by eye by me.
-- No UNLOCK badge/unlock state anywhere (overlay panel, control window, order list): MET (removed from `AbilityPanel.tsx`, CSS, `stepsFor`).
-- Panel names the round's points ("Round N: X points", 6/6/5/5/10): MET in code; not looked at by eye.
-- Points per round, Infernus (highlighted pills, cost sum): R1 Napalm T1+T2, Afterburn T1+T2 = 6; R2 Flame Dash T1, Afterburn T3 = 6; R3 Napalm T3 = 5; R4 Flame Dash T2, Concussive T1+T2 = 5; R5 Flame Dash T3, Concussive T3 = 10. Total 32, no overspend. Rule (`pillRounds`): follow the standard order strictly, a pill that doesn't fit waits (points carry over), leftovers after the order ends go tier 1s, then 2s, then 3s in bar order.
-- Look, 15 s, control window agrees: unchanged apart from removing the badge and adding the title line.
-- Advice within ~0.5 s: MET in the harness for frame switches (252-476 ms, mean ~333, latest full run; earlier this round 549-691). Cold first draft of a match not measured separately (see below); visible-session numbers not measured.
-- Visible-session latency table (req. 8): NOT DONE. I only measured with the harness (`win:e2e`, invisible, BRAWL_E2E), so it is not the visible-session number the spec asks for.
-- Advice picks/scores unchanged: MET (no recogniser/engine change; `npm run check` incl. frame-reads test passes; e2e boxes/scores checks pass).
-- Tier List, Ability order list etc. still there: MET (nothing removed).
-- Real match: not tested.
+**Blocker: a real Deadlock (pid 53168, D:\SteamLibrary\...\deadlock.exe) was open the whole session.** `win:e2e` and `win:demo` refuse to run (`real-game-open`) and I did not close your game. So NOT run this session: the new e2e checks (`dot-drawn-lobby`, `dot-hover-line`, `dot-hover-leaves-clickthrough`, `detect-miss`, `detect-hit`, `f8-registered`; written in `scripts/win/e2e-main.cjs`, unexecuted), the full e2e <30 s / advice-time check, and the demo PNG regeneration (choice1, choice2, draft-r2c3-reroll). Close Deadlock, then run `npm run win:e2e` and the three `win:demo`s.
 
-## Latency (harness, invisible BRAWL_E2E run of `win:e2e`, ms from the frame switch to the overlay showing the new cards)
-Five switches, before -> after: 549/561/562/622/691 -> 476/377/304/253/252 (a second run of the same code: 683/560/498/248/438 and 687/313/515/376/448). Method: `switch-5x` in `scripts/win/e2e-main.cjs` polls the overlay every 50 ms after `setFrame`.
-What changed (advice identical: 27/27 fixtures, frame-reads test, all e2e checks pass): (1) one video draw per frame instead of seven (each `drawImage` from video was ~10 ms, copy 72 -> ~20 ms); (2) the page waits for a new video frame instead of a fixed 120 ms pause, and the worker requests the next frame when it starts reading (two-frame check finds it waiting); (3) hero bar reads only the 5 slots advice uses and skips masked pixels (Node: 350-490 -> 120-230 ms on the demo frames, same self hero and enemies on all 5 frames).
-Not measured: a cold first draft of a match (the harness's `advice-choice1` timing starts after the dummy already showed choice1, so it is not a cold read), and any visible session with the window on screen. Estimate only: cards ~150 ms + bar ~150 ms + pipeline. One full run this round failed `testmode-off` (`overlayVisible=true`) and passed on two reruns of `--only testmode` and on the next full run; cause not found.
+Observed this session (Linux side):
+- Detect now: button beside Start, disabled + "Deadlock not found" without a game (component test passes). One-try logic, F8, tray, hold-after-miss written; NOT run on Windows.
+- F8 register only while a game window exists: unit test on `shouldRegisterDetectKey` passes. `detect.manual` e2e line: not run.
+- Dot state machine: 5 unit tests pass (found, hidden on draft, back after 10 min / lost+found, foreground, colour). Overlay drawing/hover: written, not run.
+- `npm run check` ran green 3 times in a row (12-13 s each); 115 tests. `brawl:see -- --fixtures` 27/27.
+- Slow tests: recognise.test 1.8 s and regions.test ~1 s per test alone; they pass 5 s only under parallel load. Added `vi.setConfig({ testTimeout: 20_000 })` in both files, no assertion touched.
+- AGENTS.md and the wiki (Windows-App page, pushed) describe F8 and the dot.
+
+Automatic-miss diagnosis (req 9): ran the real probe (`probeShopScreen`) on demo + `screenshots/` frames scaled to 1280-2560 px wide. Cause reproduced and fixed: CHOICE-1 frames missed at 1312 and 1600 px wide (4 of ~160 draft cases) because a stray lit pixel at the glyph box edge stretched its bounding box; `readDigit` now retries ignoring single-pixel columns. After: 0 draft misses, 0 false hits on `gameplay`/`inround-r3` at every width 1280-2560 (step 32); fixtures 27/27; regression test `probe-scales.test.ts`. Not reproduced / unverified: foreground gating and the GDI screen grab against a real Deadlock (needs a hand check; the new `draft.probe.miss` log line (`not-foreground` / `glyph-not-read`) will show which in a real session's log). No grab-null log added (grab failure currently reads as glyph-not-read).
+
+Not done: no `v0.2.0-rc.2` tag (e2e/demo not run, so not every automated criterion passed). Real-match and lobby checks are yours.
