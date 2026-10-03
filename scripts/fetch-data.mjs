@@ -511,7 +511,11 @@ async function main() {
 
   if (CATALOG_ONLY) {
     const old = JSON.parse(await readFile(path.join(OUT, 'manifest.json'), 'utf8'));
-    await save('manifest.json', { ...old, catalog_fetched_at: manifest.fetched_at, counts: { ...old.counts, ...manifest.counts } });
+    await save('manifest.json', {
+      ...old,
+      catalog_fetched_at: manifest.fetched_at,
+      counts: { ...old.counts, ...manifest.counts },
+    });
     console.log('done (catalog only)', manifest.counts);
     return;
   }

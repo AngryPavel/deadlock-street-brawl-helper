@@ -1152,13 +1152,13 @@ export function draftRegions(width: number, height: number): Region[] {
     boxes.push([b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad]);
   box(LABELS.choice);
   box(LABELS.rerolls);
-  const inv = INVENTORY;
-  boxes.push([
-    inv.x0 - inv.search - pad,
-    inv.y0 - inv.search - pad,
-    inv.x0 + (inv.cols - 1) * inv.pitch + inv.icon + inv.search + pad,
-    inv.y0 + (inv.rows - 1) * inv.pitch + inv.icon + inv.search + pad,
-  ]);
+  for (const inv of INVENTORY_LAYOUTS)
+    boxes.push([
+      inv.x0 - inv.search - pad,
+      inv.y0 - inv.search - pad,
+      inv.x0 + (inv.cols - 1) * inv.pitch + inv.icon + inv.search + pad,
+      inv.y0 + (inv.rows - 1) * inv.pitch + inv.icon + inv.search + pad,
+    ]);
   return boxes.map(([x0, y0, x1, y1]) => {
     const x = Math.max(0, Math.floor(x0 * sx)),
       y = Math.max(0, Math.floor(y0 * sy));
@@ -1193,6 +1193,10 @@ export const INVENTORY = {
   search: 6,
   scales: [0.94, 1, 1.06],
 } as const;
+/** The grid as a newer game build draws it: the stat bars become a row of icons above, the grid moves to the screen
+ *  edge and the tiles grow (72 px, 82 px pitch). `readInventory` reads both layouts and keeps the one that matches more. */
+export const INVENTORY_WIDE = { ...INVENTORY, x0: 34, y0: 1261, pitch: 82, icon: 72 } as const;
+const INVENTORY_LAYOUTS = [INVENTORY, INVENTORY_WIDE] as const;
 export const MIN_INVENTORY_SCORE = 0.6; // for items that were on offer or are already owned
 export const SURE_INVENTORY_SCORE = 0.85; // for anything else
 export const MIN_INVENTORY_SD = 20; // raw pixel std-dev below which a slot counts as empty
@@ -1210,6 +1214,34 @@ export interface InventoryRead {
  * owned) settles icon twins and lowers the score floor; an item outside it needs a near-perfect match.
  */
 export function readInventory(img: RGBImage, index: DecodedIndex, prefer: number[] = []): InventoryRead[] {
+  let best: InventoryRead[] = [];
+  let bestN = -1;
+  for (const layout of INVENTORY_LAYOUTS) {
+    const r = readInventoryAt(img, index, prefer, layout);
+    const n = r.filter((x) => x.itemId !== 0).length;
+    if (n > bestN) {
+      best = r;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+function readInventoryAt(
+  img: RGBImage,
+  index: DecodedIndex,
+  prefer: number[],
+  INVENTORY: {
+    x0: number;
+    y0: number;
+    pitch: number;
+    icon: number;
+    cols: number;
+    rows: number;
+    search: number;
+    scales: readonly number[];
+  },
+): InventoryRead[] {
   const sx = img.width / BRAWL_LAYOUT.ref.width,
     sy = img.height / BRAWL_LAYOUT.ref.height;
   const out: InventoryRead[] = [];
