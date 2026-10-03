@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   drawReads,
   drawDot,
-  dotGeometry,
+  dotBadgeRect,
   gradesFromAdvice,
   overlayHasContent,
   scoresFromAdvice,
@@ -87,8 +87,8 @@ export default function OverlayApp() {
     const st = stateRef.current;
     const c0 = canvasRef.current;
     if (c0 && dotRef.current) {
-      const g = dotGeometry(c0.height);
-      const near = Math.hypot(ev.clientX - g.cx, ev.clientY - g.cy) <= g.r + 6;
+      const b = dotBadgeRect(c0.height);
+      const near = ev.clientX >= b.x && ev.clientX <= b.x + b.w && ev.clientY >= b.y && ev.clientY <= b.y + b.h;
       const next = near ? dotRef.current : null;
       setDotTip((prev) => (prev === next ? prev : next));
       if (window.brawlAPI?.isE2E) window.__overlayDotTip = next ? DOT_TEXT[next] : null;
@@ -184,7 +184,7 @@ export default function OverlayApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- draw only reads refs
   }, []);
 
-  const c_ = dotTip && canvasRef.current ? dotGeometry(canvasRef.current.height) : null;
+  const c_ = dotTip && canvasRef.current ? dotBadgeRect(canvasRef.current.height) : null;
   const advice = panelState?.draft ? panelState.advice : null;
   const abilityPanel = panelState && !panelState.draft ? panelState.panel : null;
   const hovered = hover && advice ? advice.ranked.find((r) => r.itemId === hover.itemId) : null;
@@ -206,7 +206,7 @@ export default function OverlayApp() {
         />
       )}
       {dotTip && c_ && (
-        <div className="overlay-dot-tip" style={{ left: c_.cx + c_.r + 8, top: c_.cy - 12 }}>
+        <div className="overlay-dot-tip" style={{ left: c_.x, top: c_.y + c_.h + 6 }}>
           {DOT_TEXT[dotTip]}
         </div>
       )}

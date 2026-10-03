@@ -21,6 +21,8 @@ export const CHANNELS = {
   detectRun: 'detect-run',
   detectMiss: 'detect-miss',
   captureResult: 'capture-result',
+  // Debug: the frame capture sees at a Detect now press, saved as a PNG next to the app's data.
+  saveDebugFrame: 'save-debug-frame',
   detectKeyState: 'detect-key-state',
   detectKeyGet: 'detect-key-get',
   platformWarning: 'platform-warning',

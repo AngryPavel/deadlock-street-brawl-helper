@@ -276,8 +276,23 @@ export function dotGeometry(canvasH: number) {
   return { cx: 12 * k + r, cy: 12 * k + r, r };
 }
 export const DOT_COLORS: Record<DotState, string> = { watching: '', reading: '#f0a830', failed: '#8a9092' };
+const DOT_WORD: Record<DotState, string> = {
+  watching: 'Watching for the draft',
+  reading: 'Reading the draft',
+  failed: 'Capture failed',
+};
+// Deadlock bolt from public/favicon.svg (48 x 45 box)
+const BOLT =
+  'M25.946 44.938c-.664.845-2.021.375-2.021-.698V33.937a2.26 2.26 0 0 0-2.262-2.262H10.287c-.92 0-1.456-1.04-.92-1.788l7.48-10.471c1.07-1.497 0-3.578-1.842-3.578H1.237c-.92 0-1.456-1.04-.92-1.788L10.013.474c.214-.297.556-.474.92-.474h28.894c.92 0 1.456 1.04.92 1.788l-7.48 10.471c-1.07 1.498 0 3.579 1.842 3.579h11.377c.943 0 1.473 1.088.89 1.83L25.947 44.94z';
 
-/** Draws the status dot (teal watching / amber reading / grey failed, ~70 % opaque); returns what it drew. */
+/** The lobby badge's rectangle (logo, title and status line around the dot) on a canvas of this height. */
+export function dotBadgeRect(canvasH: number) {
+  const k = canvasH / 1080;
+  return { x: 4 * k, y: 1 * k, w: 232 * k, h: 32 * k };
+}
+
+/** Draws the lobby badge: status dot (teal watching / amber reading / grey failed), the bolt logo, the
+ *  "STREET BRAWL ADVISOR" title and a status line; returns what it drew (the dot, as before). */
 export function drawDot(
   ctx: CanvasRenderingContext2D,
   state: DotState,
@@ -286,9 +301,21 @@ export function drawDot(
   pulse = 0,
 ) {
   const g = dotGeometry(canvasH);
+  const k = canvasH / 1080;
   const color = DOT_COLORS[state] || theme.teal;
+  const b = dotBadgeRect(canvasH);
   ctx.save();
-  ctx.globalAlpha = 0.7;
+  // plate: charcoal with a thin teal border
+  ctx.globalAlpha = 0.88;
+  ctx.fillStyle = theme.panel;
+  ctx.strokeStyle = theme.teal;
+  ctx.lineWidth = Math.max(1, k);
+  ctx.beginPath();
+  ctx.roundRect(b.x, b.y, b.w, b.h, 4 * k);
+  ctx.fill();
+  ctx.stroke();
+  // status dot
+  ctx.globalAlpha = 0.9;
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(g.cx, g.cy, g.r, 0, Math.PI * 2);
@@ -299,9 +326,25 @@ export function drawDot(
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(1.5, g.r * 0.35);
     ctx.beginPath();
-    ctx.arc(g.cx, g.cy, g.r * (1 + 1.6 * pulse), 0, Math.PI * 2);
+    ctx.arc(g.cx, g.cy, g.r * (1 + 0.5 * pulse), 0, Math.PI * 2);
     ctx.stroke();
   }
+  // logo
+  ctx.globalAlpha = 1;
+  ctx.save();
+  ctx.translate(28 * k, 6 * k);
+  ctx.scale((20 * k) / 48, (20 * k) / 48);
+  ctx.fillStyle = theme.teal;
+  ctx.fill(new Path2D(BOLT));
+  ctx.restore();
+  // title + status line
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = theme.text;
+  ctx.font = `bold ${13 * k}px sans-serif`;
+  ctx.fillText('STREET BRAWL ADVISOR', 54 * k, 15 * k);
+  ctx.fillStyle = theme.muted;
+  ctx.font = `${10.5 * k}px sans-serif`;
+  ctx.fillText(`${DOT_WORD[state]} · F8`, 54 * k, 27.5 * k);
   ctx.restore();
   return { ...g, color, state };
 }

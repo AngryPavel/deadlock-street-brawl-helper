@@ -106,6 +106,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const [f8InUse, setF8InUse] = useState(false);
   // A running Detect now try: pressed-at time; the first frame result decides hit or miss.
   const detectMissesRef = useRef(0);
+  const lastReadSigRef = useRef('');
+  const fullCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const detectRef = useRef<{ at: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [took_, setTook] = useState<string>('');
   const workerRef = useRef<Worker | null>(null);
@@ -304,6 +306,12 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   }
   /** F8 / the button / the tray: main has already turned capture on; the first frame result decides (see onMessage). */
   const runDetect = () => {
+    log('brawl-view', 'info', 'detect.run', {
+      ignored: !isElectron || !!detectRef.current,
+      capture: captureStateRef.current,
+      draft: !!draftRef.current,
+      worker: !!workerRef.current,
+    });
     if (!isElectron || detectRef.current) return; // presses during a running try are ignored
     const at = performance.now();
     detectMissesRef.current = 0;
@@ -315,6 +323,10 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       }, DETECT_TIMEOUT_MS),
     };
     setStatus('Detecting…');
+    setTimeout(() => {
+      const fc = fullCanvasRef.current;
+      if (fc && fc.width) window.brawlAPI?.saveDebugFrame?.(fc.toDataURL('image/png'));
+    }, 1500);
     // a draft already on screen: throw the old read away and read it again, so the press visibly does something
     if (draftRef.current && workerRef.current) workerRef.current.postMessage({ type: 'reset' } satisfies WorkerIn);
     if (captureStateRef.current === 'off') {
@@ -612,7 +624,6 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     const w = workerRef.current;
     if (!w) return;
     const canvas = document.createElement('canvas'); // the probe crop
-    const fullCanvasRef = { current: null as HTMLCanvasElement | null };
     // Video frames presented so far (a persistent requestVideoFrameCallback loop) vs. the count at the last copy.
     const vid = videoRef.current;
     const frames = {
@@ -868,6 +879,18 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         readsRef.current = [];
         const pv = previewRef.current;
         pv?.getContext('2d')?.clearRect(0, 0, pv.width, pv.height);
+      }
+      const readSig = `${r.shop}|${seen}|${r.round}|${r.choice}|${r.accepted}|${r.reads.map((x) => x.itemId).join(',')}`;
+      if (readSig !== lastReadSigRef.current) {
+        lastReadSigRef.current = readSig;
+        log('brawl-view', 'info', 'draft.read', {
+          shop: r.shop,
+          seen,
+          round: r.round,
+          choice: r.choice,
+          accepted: r.accepted,
+          items: r.reads.map((x) => x.itemId),
+        });
       }
       setFps(r.shop);
       stepTracker(r.shop);

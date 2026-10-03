@@ -60,6 +60,7 @@ const api = {
     };
   },
   detectMiss: () => ipcRenderer.send(CHANNELS.detectMiss),
+  saveDebugFrame: (dataUrl: string) => ipcRenderer.send(CHANNELS.saveDebugFrame, dataUrl),
   captureResult: (ok: boolean) => ipcRenderer.send(CHANNELS.captureResult, ok),
   getDetectKeyInUse: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.detectKeyGet),
   onDetectKeyState: (cb: (inUse: boolean) => void) => {

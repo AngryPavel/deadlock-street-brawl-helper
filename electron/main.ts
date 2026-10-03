@@ -749,6 +749,15 @@ function setupIpc() {
     emitCaptureState();
     refreshDot();
   });
+  ipcMain.on(CHANNELS.saveDebugFrame, (_e, dataUrl: string) => {
+    try {
+      const file = path.join(app.getPath('userData'), 'detect-frame.png');
+      writeFileSync(file, Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64'));
+      log('electron-main', 'info', 'detect.frame.saved', { file });
+    } catch (e) {
+      log('electron-main', 'warn', 'detect.frame.failed', { message: String(e) });
+    }
+  });
   ipcMain.on(CHANNELS.captureResult, (_e, ok: boolean) => {
     captureFailed = !ok;
     refreshDot();
@@ -832,6 +841,11 @@ app.whenReady().then(() => {
   startRectPolling();
   startProcessMetrics();
   setTimeout(lowerAllPriorities, 3000).unref();
+  // Detect now / re-roll reads / capture diagnostics from the control window, so they reach the terminal too.
+  if (alive(control))
+    control.webContents.on('console-message', (_e, _level, message) => {
+      if (/"msg":"(detect\.|rerolls\.|capture\.|draft\.read)/.test(message)) console.info(message);
+    });
   // Dev only: surface the control window's own perf summaries (a production build never emits them).
   if (perf.enabled && alive(control))
     control.webContents.on('console-message', (_e, _level, message) => {
