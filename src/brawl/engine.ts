@@ -425,7 +425,7 @@ export function adviseDraft(input: BrawlInput, state: DraftState): DraftAdvice {
   // set holding a poor rare or enhanced card is valued against a fresh draw of the same rare tier / enhanced slot,
   // which is what makes re-rolling a weak rare card worthwhile. The value of holding the re-roll for a later set is reported alongside (later sets
   // on screen have a known gain; unseen ones are valued by backward induction over the distribution of their best
-  // card, V_j = E[max(gain_j, V_{j+1})]) but does not veto the re-roll: the user asked for the plain expectation.
+  // card, V_j = E[max(gain_j, V_{j+1})]) and vetoes the re-roll when saving it is worth at least as much as re-rolling now.
   // The state-dependent terms (synergy, counter, upgrade) are stripped from the current best so it is on the pool's scale.
   let reroll: RerollAdvice | null = null;
   const rerolls =
@@ -466,7 +466,7 @@ export function adviseDraft(input: BrawlInput, state: DraftState): DraftAdvice {
     }
     known.forEach((k, i) => {
       if (!k) return;
-      if (k.gain > REROLL_GAIN_THRESHOLD && (!reroll || k.gain > reroll.gain))
+      if (k.gain > REROLL_GAIN_THRESHOLD && k.gain > hold[i + 1] && (!reroll || k.gain > reroll.gain))
         reroll = {
           set: i,
           currentBest: k.currentBest,

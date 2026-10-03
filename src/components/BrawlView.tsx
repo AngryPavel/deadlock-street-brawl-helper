@@ -217,7 +217,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const enemyIds = enemies.filter(Boolean);
   const heroId = hero.id;
   const advice = useMemo(() => {
-    if (!input || !cards.length) return null;
+    if (!input || cards.length < 3) return null; // advise only once all 3 cards are read
     const sets: Offer[][] = [[], [], []];
     sets[choice - 1] = cards;
     return adviseDraft(input, { round, owned, enemies: enemyIds, sets });
