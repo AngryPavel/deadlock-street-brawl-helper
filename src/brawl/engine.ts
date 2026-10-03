@@ -1,9 +1,7 @@
 // Street Brawl draft engine. Pure function of (hero assets, item catalog, Street Brawl aggregate analytics,
-// mode config). Everything in the draft is free and the order is fixed by round, so unlike the normal-mode
-// generator there is no cost-efficiency or buy-time term. It never reads per-player data.
+// mode config). Everything in the draft is free and the order is fixed by round, so there is no cost-efficiency or buy-time term. It never reads per-player data.
 import type { Item, ItemStat } from '../types';
-import { statValue } from '../generator/build';
-import { kitProfile } from '../generator/kit';
+import { kitProfile, statValue } from './kit';
 import type { BrawlInput, DraftAdvice, DraftState, Offer, RankedOffer, RerollAdvice, ScoreParts } from './types';
 
 // tier: popularity and win-lift are normalised within a tier (see baseScores), so the within-tier score spread is

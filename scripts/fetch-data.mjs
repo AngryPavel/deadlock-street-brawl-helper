@@ -1,48 +1,29 @@
 // Data pipeline: snapshots every remote input the app needs into public/data/.
-// After one successful run the app and the generator work fully offline.
+// After one successful run the app works fully offline.
 //
 // Outputs
 //   public/data/items.json                 item catalog (all upgrade items)
 //   public/data/heroes.json                active heroes with base stats + growth
 //   public/data/abilities.json             abilities of active heroes (names, upgrades)
-//   public/data/analytics/<hero_id>.json   item-stats, ability-order-stats, item-permutation-stats, and (top population)
-//                                          build styles: per-style item/ability stats (see scripts/styles.mjs)
 //   public/data/img/{items,heroes,abilities}/  webp images so the app needs no network at all
 //   public/data/brawl-config.json          Street Brawl mode constants (round budgets, draft tiers/weights)
 //   public/data/analytics/brawl/<hero_id>.json  Street Brawl item-stats, pair stats, and item-stats vs every enemy hero
 //   public/data/analytics/brawl/tier-list.json  Street Brawl hero win/pick totals + item totals summed over every hero
 //   public/data/manifest.json              timestamps + counts
 //
-// Flags
-//   --analytics-only            refresh analytics/* only
+// Flags (none = catalog + Street Brawl snapshot)
 //   --brawl                     refresh the Street Brawl snapshot only
 //   --catalog                   refresh items, heroes, abilities and their images only (no analytics)
 //   --brawl-tierlist            rebuild analytics/brawl/tier-list.json only (one request + the files already on disk)
-//   --heroes 1,31               (with --analytics-only) only these hero ids
+//   --brawl-abilities           refresh ability_order_stats in every analytics/brawl/<id>.json only
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const API = 'https://api.deadlock-api.com';
 const ASSETS = `${API}/v1/assets`; // assets.deadlock-api.com no longer resolves; the same data lives under /v1/assets
 const OUT = path.resolve('public/data');
-// `--heroes 1,31` limits --analytics-only to those hero ids.
-const HEROES_ARG = (() => {
-  const i = process.argv.indexOf('--heroes');
-  if (i < 0 || !process.argv[i + 1]) return null;
-  return process.argv[i + 1]
-    .split(',')
-    .map((x) => Number(x.trim()))
-    .filter((x) => Number.isFinite(x));
-})();
 // Analytics window: last 30 days (live data; the window is recorded in manifest.json).
 const WINDOW_DAYS = 30;
-// High-rank population: average lobby badge >= 90 (Phantom and above). Chosen as the highest bracket
-// where all three analytics endpoints are still well populated for every hero (Ascendant+ leaves
-// ability-order sequences with <100 matches). Builds are generated from this population when it is
-// large enough, so they follow what top-rank players actually buy rather than the all-rank average.
-const TOP_BADGE = 90;
-// `--analytics-only` refreshes only public/data/analytics/* from the existing heroes.json.
-const ANALYTICS_ONLY = process.argv.includes('--analytics-only');
 // `--brawl` refreshes only the Street Brawl snapshot (brawl-config.json, analytics/brawl/*).
 const CATALOG_ONLY = process.argv.includes('--catalog');
 const BRAWL_ONLY = process.argv.includes('--brawl');
@@ -52,9 +33,8 @@ const BRAWL_TIERLIST_ONLY = process.argv.includes('--brawl-tierlist');
 // `--brawl-abilities` refreshes only ability_order_stats in every analytics/brawl/<id>.json (~1 request
 // per hero) and leaves the rest of each file untouched, instead of the full ~1400-request --brawl run.
 const BRAWL_ABILITIES_ONLY = process.argv.includes('--brawl-abilities');
-// A 429 on match metadata can ask for an hour-long retry-after; wait at most this long, then throw so the
-// caller skips that match and moves on to the next one (there are more candidates than the target).
-const MAX_WAIT_MS = 45 * 1000;
+// Longest retry-after honoured on a 429; a longer one throws instead of stalling the run.
+const MAX_WAIT_MS = 60_000;
 // Street Brawl analytics: the API has no rank filter for this mode (400 "Cannot filter by average badge"),
 // so there is one all-rank population. Enemy-filtered item-stats are fetched for every hero as the counter term.
 const BRAWL_GAME_MODE = 'street_brawl';
@@ -62,7 +42,7 @@ let MIN_TS = Math.floor(Date.now() / 1000) - WINDOW_DAYS * 86400;
 // Street Brawl pins both ends of the window. The tier list divides item matches from the per-hero files by
 // hero counts from a live hero-stats call, so those two have to cover exactly the same matches: with the
 // upper end open, a tier-list rebuild days later counts hero-games the item files never saw and understates
-// every usage figure. The other paths leave it open.
+// every usage figure.
 let MAX_TS = null;
 const windowQ = () => `min_unix_timestamp=${MIN_TS}${MAX_TS ? `&max_unix_timestamp=${MAX_TS}` : ''}`;
 // Rate limit is 200 req / 60 s -> ~350 ms between requests keeps us well under.
@@ -75,13 +55,10 @@ async function getJson(url, tries = 5) {
     try {
       const res = await fetch(url, { redirect: 'follow' });
       if (res.status === 429 || res.status >= 500) {
-        // retry-after can be an hour on the match-metadata endpoint; cap it and let the caller skip the row
-        // match metadata is limited to a few calls per hour per IP: honour its retry-after up to MAX_WAIT_MS there
-        const maxWait = url.includes('/metadata') ? MAX_WAIT_MS : 60000;
         const asked = Number(res.headers.get('retry-after') || 0) * 1000 || 2000 * (i + 1);
-        if (res.status === 429 && asked > maxWait)
+        if (res.status === 429 && asked > MAX_WAIT_MS)
           throw new Error(`429 retry-after ${Math.round(asked / 1000)}s for ${url}`);
-        const wait = Math.min(maxWait, asked);
+        const wait = Math.min(MAX_WAIT_MS, asked);
         console.warn(`  ${res.status} on ${url} – waiting ${wait}ms`);
         await sleep(wait);
         continue;
@@ -195,118 +172,10 @@ function slimAbility(a) {
   };
 }
 
-async function fetchPopulation(heroId, extra = '') {
-  const q = `hero_id=${heroId}&min_unix_timestamp=${MIN_TS}${extra}`;
-  const [item_stats, ability_order_stats, permutation_stats] = await Promise.all([
-    getJson(`${API}/v1/analytics/item-stats?${q}`),
-    getJson(`${API}/v1/analytics/ability-order-stats?${q}&min_matches=5`),
-    getJson(`${API}/v1/analytics/item-permutation-stats?${q}&comb_size=2`),
-  ]);
-  // Ability sequences and pair stats are very large (10k+ rows); keep the most-played rows.
-  const abilitySeqs = [...ability_order_stats].sort((a, b) => b.matches - a.matches).slice(0, 400);
-  const pairs = [...permutation_stats].sort((a, b) => b.matches - a.matches).slice(0, 600);
-  return { item_stats, ability_order_stats: abilitySeqs, permutation_stats: pairs };
-}
-
-// Build styles. For every candidate anchor item we fetch the hero's item stats CONDITIONAL on that
-// item having been bought (include_item_ids). detectStyles() picks the anchors whose games look
-// materially different from the population (see scripts/styles.mjs). Each detected style then gets its
-// own item + ability-order population (include the style's seed item); the main style is the population
-// with every alternative anchor excluded, so each build is generated from games played its way.
-async function fetchStyles(hero, topQ, top, shopIds) {
-  // loaded here, not at the top: styles.mjs belongs to the build generator this app was split out of,
-  // so the Street Brawl paths must still run when it is absent
-  const { detectStyles, usageOf, STYLE } = await import('./styles.mjs');
-  const { n: N, u } = usageOf(top.item_stats.filter((s) => shopIds.has(s.item_id)));
-  const cands = [...u]
-    .filter(([, x]) => x >= STYLE.candidateShare[0] && x <= STYLE.candidateShare[1])
-    .map(([id]) => id);
-  const conditional = {};
-  for (const id of cands)
-    conditional[id] = (await getJson(`${API}/v1/analytics/item-stats?${topQ}&include_item_ids=${id}`)).filter((s) =>
-      shopIds.has(s.item_id),
-    );
-  const found = detectStyles(
-    top.item_stats.filter((s) => shopIds.has(s.item_id)),
-    conditional,
-  );
-  if (!found.length) return { styles: [], scanned: cands.length };
-  const population = async (filter) => {
-    const [item_stats, ability_order_stats] = await Promise.all([
-      getJson(`${API}/v1/analytics/item-stats?${topQ}${filter}`),
-      getJson(`${API}/v1/analytics/ability-order-stats?${topQ}${filter}&min_matches=5`),
-    ]);
-    return {
-      item_stats,
-      ability_order_stats: [...ability_order_stats].sort((a, b) => b.matches - a.matches).slice(0, 400),
-    };
-  };
-  const excluded = found.flatMap((s) => s.anchors);
-  const main = await population(`&exclude_item_ids=${excluded.join(',')}`);
-  const styles = [
-    {
-      key: 'main',
-      seed: null,
-      anchors: [],
-      exclude: excluded,
-      matches: Math.max(0, ...main.item_stats.map((s) => s.matches)),
-      ...main,
-    },
-  ];
-  for (const s of found) {
-    const pop = await population(`&include_item_ids=${s.seed}`);
-    styles.push({
-      key: `style-${s.seed}`,
-      seed: s.seed,
-      anchors: s.anchors,
-      exclude: [],
-      matches: Math.max(0, ...pop.item_stats.map((s) => s.matches)),
-      ...pop,
-    });
-  }
-  for (const s of styles) s.share = s.matches / N;
-  return { styles, scanned: cands.length };
-}
-
-async function fetchAnalytics(heroes, manifest) {
-  const targets = HEROES_ARG ? heroes.filter((h) => HEROES_ARG.includes(h.id)) : heroes;
-  console.log(`4/4 per-hero analytics (${targets.length} heroes, all ranks + badge>=${TOP_BADGE}, plus build styles)`);
-  const shopIds = new Set(
-    JSON.parse(await readFile(path.join(OUT, 'items.json'), 'utf8'))
-      .filter((i) => i.shopable && !i.disabled && i.cost > 0)
-      .map((i) => i.id),
-  );
-  for (const h of targets) {
-    const all = await fetchPopulation(h.id);
-    const topQ = `hero_id=${h.id}&min_unix_timestamp=${MIN_TS}&min_average_badge=${TOP_BADGE}`;
-    const top = await fetchPopulation(h.id, `&min_average_badge=${TOP_BADGE}`);
-    const topMatches = Math.max(0, ...top.item_stats.map((s) => s.matches));
-    const { styles, scanned } = await fetchStyles(h, topQ, top, shopIds);
-    console.log(
-      `   ${h.name}: top-rank max item matches ${topMatches}; ${scanned} anchors scanned, ${Math.max(0, styles.length - 1)} alternative style(s)${
-        styles.length
-          ? ': ' +
-            styles
-              .slice(1)
-              .map((s) => `${s.seed} ${(s.share * 100).toFixed(0)}%`)
-              .join(', ')
-          : ''
-      }`,
-    );
-    await save(`analytics/${h.id}.json`, {
-      hero_id: h.id,
-      ...all,
-      top: { min_average_badge: TOP_BADGE, ...top, styles },
-    });
-  }
-  manifest.counts.analytics_heroes = heroes.length;
-  manifest.top_min_average_badge = TOP_BADGE;
-}
-
 // One row per item, slimmed to what the counter term needs.
 const slimStat = (s) => ({ item_id: s.item_id, wins: s.wins, matches: s.matches });
 
-// Ability sequences can be large; keep the 200 most-played rows like the non-brawl population does at 400.
+// Ability sequences can be large (10k+ rows); keep the 200 most-played.
 async function fetchBrawlAbilityOrder(q) {
   const rows = await getJson(`${API}/v1/analytics/ability-order-stats?${q}&min_matches=5`);
   return [...rows].sort((a, b) => b.matches - a.matches).slice(0, 200);
@@ -451,15 +320,6 @@ async function main() {
     return;
   }
   await mkdir(OUT, { recursive: true });
-  if (ANALYTICS_ONLY) {
-    const manifest = JSON.parse(await readFile(path.join(OUT, 'manifest.json'), 'utf8'));
-    const heroes = JSON.parse(await readFile(path.join(OUT, 'heroes.json'), 'utf8'));
-    MIN_TS = manifest.min_unix_timestamp; // keep the same window as the rest of the snapshot
-    manifest.analytics_fetched_at = new Date().toISOString();
-    await fetchAnalytics(heroes, manifest);
-    await save('manifest.json', manifest);
-    return;
-  }
   const manifest = {
     fetched_at: new Date().toISOString(),
     min_unix_timestamp: MIN_TS,
@@ -467,7 +327,7 @@ async function main() {
     counts: {},
   };
 
-  console.log('1/4 item catalog');
+  console.log('1/3 item catalog');
   const items = (await getJson(`${ASSETS}/items/by-type/upgrade`)).map(slimItem);
   console.log(`   downloading ${items.length} item images`);
   for (const it of items) {
@@ -482,7 +342,7 @@ async function main() {
   manifest.counts.items = items.length;
   manifest.counts.shopable_items = items.filter((i) => i.shopable && !i.disabled).length;
 
-  console.log('2/4 heroes');
+  console.log('2/3 heroes');
   const heroesRaw = await getJson(`${ASSETS}/heroes`);
   const active = heroesRaw.filter((h) => h.player_selectable && !h.disabled && !h.in_development);
   const heroes = active.map(slimHero);
@@ -496,7 +356,7 @@ async function main() {
   await save('heroes.json', heroes);
   manifest.counts.heroes = heroes.length;
 
-  console.log('3/4 abilities');
+  console.log('3/3 abilities');
   const abilitiesRaw = await getJson(`${ASSETS}/items/by-type/ability`);
   const activeIds = new Set(active.map((h) => h.id));
   const abilities = abilitiesRaw.filter((a) => activeIds.has(a.hero)).map(slimAbility);
@@ -519,8 +379,6 @@ async function main() {
     console.log('done (catalog only)', manifest.counts);
     return;
   }
-  await fetchAnalytics(heroes, manifest);
-
   await fetchBrawl(heroes, manifest);
 
   await save('manifest.json', manifest);

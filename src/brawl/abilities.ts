@@ -26,8 +26,7 @@ const stepsFor = (seq: number[], byId: Map<number, AbilityStep['ability']>): Abi
 };
 
 /** Suggests a full-game ability level-up order from Street Brawl ability-order-stats, ranked by shrunk win
- *  rate x log(matches) like the item build generator's pickAbilityOrder, but without its `>= 8` length
- *  filter (Street Brawl sequences run 7-12 long) and preferring the longest sequence among the top-scoring
+ *  rate x log(matches) with no minimum length (Street Brawl sequences run 7-12 long), preferring the longest sequence among the top-scoring
  *  ones, so the suggestion covers the whole game instead of stopping early. */
 export function brawlAbilityOrder(input: BrawlInput): BrawlAbilityOrder {
   const stats: AbilityOrderStat[] = input.analytics.ability_order_stats ?? [];
