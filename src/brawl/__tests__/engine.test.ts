@@ -53,6 +53,23 @@ describe('adviseDraft: reroll', () => {
     expect(advice.reroll!.gain).toBeGreaterThan(0);
   });
 
+  it('is advised more readily on the last choice, where nothing is left to save it for', () => {
+    const bases = baseScores(infernus);
+    const layout = roundTiers(infernus, 2);
+    const tier = layout[2].normal;
+    const sorted = [...bases.values()].filter((b) => b.item.item_tier === tier).sort((a, b) => a.base - b.base);
+    const gains: (number | null)[] = [];
+    for (let i = 0; i < 3; i++) {
+      const sets: { itemId: number }[][] = [[], [], []];
+      sets[i] = [0.2, 0.3, 0.4].map((q) => ({ itemId: sorted[Math.floor(sorted.length * q)].item.id }));
+      const adv = adviseDraft(infernus, { round: 2, owned: [], enemies: [], sets });
+      gains.push(adv.reroll ? adv.reroll.gain - adv.reroll.holdValue : null);
+      if (i === 2) expect(adv.reroll!.holdValue).toBe(0);
+    }
+    expect(gains[2]).not.toBeNull();
+    if (gains[0] !== null) expect(gains[2]!).toBeGreaterThan(gains[0]);
+  });
+
   it('README example (Infernus round 2, Improved Spirit set) keeps the set and picks Improved Spirit', () => {
     const set = ['Improved Spirit', "Enchanter's Emblem", 'Swift Striker'].map((n) => ({ itemId: itemByName(n).id }));
     const advice = adviseDraft(infernus, { round: 2, owned: [], enemies: [], sets: [set, [], []] });
