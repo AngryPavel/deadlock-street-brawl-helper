@@ -230,6 +230,24 @@ in `win:e2e`/`win:demo` drives the actual game:
   from earlier cases change scores), and reads drawn rects and overlay-panel scores in one call (two reads can
   straddle a state update). The fake window is 1920x1080: the recogniser cannot read the choice glyph at 1280x720.
 
+## Detect now (F8) and the lobby status dot
+
+- **Detect now** (F8 global hotkey, the `Detect now (F8)` button beside Start capture, tray entry) = `detectNow()` in
+  `electron/main.ts`: clears the post-miss hold, forces `captureWanted`, and pushes `detect-run` to the control window,
+  which treats the first worker result as the verdict (`runDetect`/`finishDetect` in `BrawlView.tsx`): draft -> normal
+  path; not a draft -> status `No draft found`, capture off, `detect-miss` IPC (main holds capture off even in test
+  mode/harness until the next press, window change or test-frame switch). Logs `detect.manual` (`hit|miss|failed`, ms).
+  F8 is registered only while a game/dummy window exists (`electron/detectKey.ts`); a failed registration shows
+  "F8 is in use by another program". e2e hooks: `__brawlE2E.detectNow()/forceCaptureOff()/getDot()/getF8()`.
+- **Status dot**: drawn by the overlay (`drawDot` in `draw.ts`, `OverlayState.dot`, set by main, never by the control
+  window) top-left, ~10 px at 1080p, 70 % opaque: teal watching / amber reading / grey capture failed. Shown per the
+  pure state machine `src/brawl/lobbyDot.ts` (window found, no draft for 10 min or window lost/found = lobby; hidden
+  while in a match or when Deadlock is not foreground; test mode/harness count as foreground). Hover line is
+  `DOT_TEXT`; hit-tested in `OverlayApp.tsx`. `overlayHasContent` includes `dot`.
+- Probe diagnostics: `draft.probe.miss` logs (on change only) `not-foreground` or `glyph-not-read`. A real miss cause
+  found offline: at some widths (1312, 1600) a stray lit pixel from neighbouring UI stretched the CHOICE-1 glyph box;
+  `readDigit` now retries ignoring one-pixel columns (`probe-scales.test.ts`).
+
 ## Performance design (keep the game fast)
 
 - Capture is not on all session. `electron/main.ts` owns a capture state (`captureWanted`, `probeMode()`); the

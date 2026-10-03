@@ -27,6 +27,20 @@ import { probeShopScreen } from './shopProbe';
 import { CHANNELS } from './channels';
 import { MIN_HEIGHT, MIN_WIDTH, isBounds, validBounds } from './windowBounds';
 import { overlayHasContent } from '../src/brawl/overlayContent';
+import { dotState, initialLobby, lobbyDotVisible, stepLobby, type DotState } from '../src/brawl/lobbyDot';
+import { shouldRegisterDetectKey } from './detectKey';
+
+// Not imported from draw.ts (the recogniser): main only needs the blank shape.
+const BLANK_OVERLAY = {
+  reads: [],
+  bestId: null,
+  reroll: false,
+  frameW: 0,
+  frameH: 0,
+  advice: null,
+  draft: false,
+  panel: null,
+};
 import { log } from '../src/log';
 import { createPerf } from '../src/perf';
 
@@ -60,6 +74,17 @@ let lastRect: Rect | null = null;
 // and its tip are over. Test mode and the e2e harness (`probe` false) capture whenever the game window exists.
 let captureWanted = false;
 let lastCaptureStateJson = '';
+// Detect now: after a miss, capture stays off even where it normally just follows the window (test mode, harness),
+// until the next press, a window change or a test-frame switch.
+let captureHeld = false;
+// The last capture start failed or was denied (grey dot).
+let captureFailed = false;
+// Lobby status dot (see src/brawl/lobbyDot.ts) and the F8 hotkey, which exists only while a game window does.
+let lobby = initialLobby();
+let lastDot: DotState | null = null;
+let f8Registered = false;
+let f8InUse = false;
+const DETECT_KEY = 'F8';
 const probeMode = () => process.platform === 'win32' && !process.env.BRAWL_E2E && !alive(testWindow);
 function captureState() {
   return { wanted: captureWanted, probe: probeMode() };
@@ -306,11 +331,71 @@ function ownWindowHandles(includeTest = false): Set<bigint> {
   return handles;
 }
 
+function currentDot(): DotState | null {
+  const fg = !probeMode() || isGameForeground();
+  if (!lobbyDotVisible(lobby, fg)) return null;
+  return dotState({ captureFailed, capturing: captureWanted || !!lastOverlayState?.draft });
+}
+/** Sends the overlay the control window's last state plus the dot (which only the main process knows). */
+function relayOverlay() {
+  const state = { ...(lastOverlayState ?? BLANK_OVERLAY), dot: lastDot };
+  overlayWanted = overlayHasContent(state);
+  syncOverlay();
+  if (alive(overlay) && !overlay.webContents.isDestroyed()) overlay.webContents.send(CHANNELS.overlayState, state);
+}
+/** Recomputes the dot; resends the overlay state only when it changed. */
+function refreshDot() {
+  const d = currentDot();
+  if (d === lastDot) return;
+  lastDot = d;
+  relayOverlay();
+}
+
+// Probe diagnostics (requirement: why automatic detection misses): one line whenever the reason the probe is not
+// hitting changes, never per tick. Reasons: not foreground, screen grab failed, glyph not read.
+let lastProbeFact = '';
+function logProbeMiss(foreground: boolean) {
+  const fact = foreground ? 'glyph-not-read' : 'not-foreground';
+  if (fact === lastProbeFact) return;
+  lastProbeFact = fact;
+  log('electron-main', 'info', 'draft.probe.miss', { reason: fact });
+}
+
+function syncDetectKey(gameExists: boolean) {
+  const act = shouldRegisterDetectKey(gameExists, f8Registered);
+  if (act === 'register') {
+    f8Registered = globalShortcut.register(DETECT_KEY, () => detectNow('f8'));
+    f8InUse = !f8Registered;
+    log('electron-main', f8Registered ? 'info' : 'warn', f8Registered ? 'detect.key.registered' : 'detect.key.in-use');
+    sendControl(CHANNELS.detectKeyState, f8InUse);
+  } else if (act === 'unregister') {
+    globalShortcut.unregister(DETECT_KEY);
+    f8Registered = false;
+    f8InUse = false;
+    sendControl(CHANNELS.detectKeyState, false);
+  } else if (gameExists && !f8Registered && f8InUse === false) {
+    /* unreachable: register always sets one of the two */
+  }
+}
+
+/** Detect now (F8, button, tray): capture of the game on at once (bypassing the screen probe and the foreground
+ *  check); the control window reads the first frame and reports hit or miss. Returns false without a game window. */
+function detectNow(source: string): boolean {
+  if (!lastRect) return false;
+  log('electron-main', 'info', 'detect.request', { source });
+  captureHeld = false;
+  captureWanted = true;
+  emitCaptureState();
+  refreshDot();
+  sendControl(CHANNELS.detectRun, source);
+  return true;
+}
+
 /** Shows or hides the overlay window to match `overlayWanted`, the game window and the toggle. */
 function syncOverlay() {
   if (!alive(overlay)) return;
   const rect = lastRect;
-  const show = !!rect && overlayWanted && overlayEnabled;
+  const show = !!rect && (overlayWanted || lastDot !== null) && overlayEnabled;
   if (rect && show && !overlay.isVisible()) {
     overlay.setBounds(toDipBounds(rect));
     overlay.showInactive();
@@ -347,11 +432,18 @@ function startRectPolling() {
       if (found && alive(overlay)) overlay.setBounds(toDipBounds(found));
       syncOverlay();
       reassert = true;
+      captureFailed = false;
+      captureHeld = false;
     }
+    syncDetectKey(!!found);
+    lobby = stepLobby(lobby, { type: 'tick', found: !!found, now: Date.now() });
+    refreshDot();
     // Real game: capture stays off until the draft screen shows up. Only sample the screen while the game is the
     // foreground window (so pixels of some other window covering it are never read), and only a few hundred pixels.
-    if (!found) captureWanted = false;
-    else if (!probeMode()) captureWanted = true;
+    if (!found) {
+      captureWanted = false;
+      captureHeld = false;
+    } else if (!probeMode()) captureWanted = !captureHeld;
     else if (!captureWanted && isGameForeground()) {
       const hit = perf.time('probe', () => probeShopScreen(found, grabScreenRegion));
       if (hit) {
@@ -359,6 +451,7 @@ function startRectPolling() {
         log('electron-main', 'info', 'draft.probe.hit');
       }
     }
+    if (found && probeMode() && !captureWanted) logProbeMiss(isGameForeground());
     emitCaptureState();
     // The game re-focusing (e.g. after an alt-tab elsewhere, or a fullscreen toast) can cover the overlay even though
     // it's marked always-on-top, so push it back on top -- when the game regains the foreground and otherwise every
@@ -511,6 +604,9 @@ function stopTestMode(message: string | null = null) {
   if (alive(win)) win.close();
   if (controlBoundsBeforeTest && alive(control)) control.setBounds(controlBoundsBeforeTest);
   controlBoundsBeforeTest = null;
+  lobby = initialLobby();
+  captureHeld = false;
+  refreshDot();
   if (alive(overlay) && !lastRect) overlay.hide();
   log('electron-main', 'info', 'testmode.stop');
   broadcastTestState();
@@ -520,6 +616,7 @@ function stopTestMode(message: string | null = null) {
 async function setTestFrame(frame: string) {
   if (!alive(testWindow) || !testFrames().includes(frame)) return testState();
   testFrame = frame;
+  captureHeld = false;
   await showTestFrame(testWindow, frame);
   log('electron-main', 'info', 'testmode.frame', { frame });
   broadcastTestState();
@@ -613,6 +710,8 @@ function setupDisplayMediaHandler() {
       const match = sources.find((s) => !ownIds.has(s.id) && isGameWindowTitle(s.name, GAME_WINDOW_TITLE));
       log('electron-main', match ? 'info' : 'warn', match ? 'capture.chosen' : 'capture.denied', { name: match?.name });
       if (!match) {
+        captureFailed = true;
+        refreshDot();
         sendControl(CHANNELS.captureDenied);
         callback({}); // denies the request instead of falling back to an arbitrary window
         return;
@@ -642,6 +741,18 @@ function setupIpc() {
     captureWanted = false;
     emitCaptureState();
   });
+  ipcMain.handle(CHANNELS.detectNow, () => detectNow('button'));
+  ipcMain.handle(CHANNELS.detectKeyGet, () => f8InUse);
+  ipcMain.on(CHANNELS.detectMiss, () => {
+    captureWanted = false;
+    captureHeld = true;
+    emitCaptureState();
+    refreshDot();
+  });
+  ipcMain.on(CHANNELS.captureResult, (_e, ok: boolean) => {
+    captureFailed = !ok;
+    refreshDot();
+  });
   ipcMain.on(CHANNELS.windowMinimize, () => alive(control) && control.minimize());
   ipcMain.on(CHANNELS.windowClose, () => alive(control) && control.close());
   ipcMain.handle(CHANNELS.platformWarning, () => platformWarning());
@@ -651,9 +762,9 @@ function setupIpc() {
   // Relay: the control window computes advice from its capture and forwards state for the overlay to draw.
   ipcMain.on(CHANNELS.overlayState, (_event, state) => {
     lastOverlayState = state;
-    overlayWanted = overlayHasContent(state);
-    syncOverlay();
-    if (alive(overlay) && !overlay.webContents.isDestroyed()) overlay.webContents.send(CHANNELS.overlayState, state);
+    if (state.draft) lobby = stepLobby(lobby, { type: 'draft', now: Date.now() });
+    lastDot = currentDot();
+    relayOverlay();
   });
 }
 
@@ -667,6 +778,7 @@ function setupTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: 'Toggle overlay', click: toggleOverlay },
+      { label: 'Detect now (F8)', click: () => detectNow('tray') },
       { label: 'Debug panel', click: toggleDebugPanel },
       { label: 'Toggle test mode', click: () => (alive(testWindow) ? stopTestMode() : void startTestMode()) },
       { label: 'Quit', click: () => app.quit() },
@@ -746,6 +858,15 @@ app.whenReady().then(() => {
         return true;
       },
       getTestWindow: () => testWindow,
+      // Same code path as F8 / the button. forceCaptureOff() gives the "capture forced off" start state.
+      detectNow: () => detectNow('e2e'),
+      forceCaptureOff: () => {
+        captureWanted = false;
+        captureHeld = true;
+        emitCaptureState();
+      },
+      getDot: () => lastDot,
+      getF8: () => ({ registered: f8Registered, inUse: f8InUse }),
       captureTestComposite,
     };
   }

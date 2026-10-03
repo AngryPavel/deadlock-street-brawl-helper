@@ -404,6 +404,67 @@ async function main() {
       100,
     );
     await sleep(600);
+    // --- lobby status dot (non-draft frame), hover line, detect-miss ---
+    {
+      const dot = await waitFor(() => js(overlay, 'window.__overlayDot ?? null'), 3_000, 100);
+      const ow = overlay.getBounds();
+      const k = ow.height / 1080;
+      check(
+        'dot-drawn-lobby',
+        !!dot &&
+          dot.state === 'watching' &&
+          String(dot.color).toLowerCase() === '#2ec4b6' &&
+          Math.abs(dot.cx - (12 * k + 5 * k)) <= 2 &&
+          Math.abs(dot.cy - (12 * k + 5 * k)) <= 2 &&
+          Math.abs(dot.r - 5 * k) <= 1,
+        `dot=${JSON.stringify(dot)} overlayH=${ow.height}`,
+      );
+      if (dot) {
+        overlay.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(dot.cx), y: Math.round(dot.cy) });
+        const want = 'Brawl Helper: watching for draft. F8 = detect now';
+        const t0 = Date.now();
+        const tip = await waitFor(() => js(overlay, `window.__overlayDotTip ?? null`), 1_000, 10);
+        const shown = await js(overlay, `document.querySelector('.overlay-dot-tip')?.textContent ?? null`);
+        check(
+          'dot-hover-line',
+          tip === want && shown === want && Date.now() - t0 <= 150 + 60,
+          `${Date.now() - t0}ms tip=${JSON.stringify(tip)} shown=${JSON.stringify(shown)}`,
+        );
+        overlay.webContents.sendInputEvent({
+          type: 'mouseMove',
+          x: Math.round(ow.width / 2),
+          y: Math.round(ow.height / 2),
+        });
+        const gone = await waitFor(() => js(overlay, `!document.querySelector('.overlay-dot-tip')`), 1_000, 10);
+        check(
+          'dot-hover-leaves-clickthrough',
+          !!gone && !!e2e.overlayIgnoresMouseEvents,
+          `gone=${!!gone} ignoresMouse=${e2e.overlayIgnoresMouseEvents}`,
+        );
+      }
+      // Detect now on a non-draft frame: "No draft found" within the limit, capture ends off, nothing drawn.
+      const statusText = () =>
+        js(control, `document.querySelector('.brawl-controls [role=status]')?.textContent ?? ''`);
+      const captureBtn = () => js(control, `document.querySelector('.brawl-capture')?.textContent ?? ''`);
+      e2e.forceCaptureOff();
+      await waitFor(async () => (await captureBtn()) === 'Start capture', 4_000, 50);
+      const m0 = Date.now();
+      e2e.detectNow();
+      const missed = await waitFor(async () => (await statusText()) === 'No draft found', 4_000, 20);
+      const missMs = Date.now() - m0;
+      await sleep(400);
+      const after = await readOverlay();
+      check(
+        'detect-miss',
+        !!missed &&
+          missMs <= 2_000 &&
+          (await captureBtn()) === 'Start capture' &&
+          after.drawn.length === 0 &&
+          !after.panel,
+        `status=${JSON.stringify(await statusText())} ${missMs}ms (limit 2000ms) btn=${await captureBtn()} drawn=${after.drawn.length}`,
+      );
+      e2e.forceCaptureOff(); // stay off; setFrame below releases the hold
+    }
     await setFrame('choice1');
     const first = await waitAdvice(c1, c1.round, c1.choice, 2_000);
     check(
@@ -597,6 +658,28 @@ async function main() {
     );
     check('panel-ends-on-draft', !!ended, `drawn kinds=${JSON.stringify(ended?.drawn.map((r) => r.kind) ?? null)}`);
 
+    // --- detect-hit: capture forced off on a draft frame, Detect now brings the plates up; dot gone in the match ---
+    {
+      await setFrame('choice1');
+      e2e.forceCaptureOff();
+      await waitFor(
+        async () =>
+          (await js(control, `document.querySelector('.brawl-capture')?.textContent ?? ''`)) === 'Start capture',
+        4_000,
+        50,
+      );
+      const l = labels.choice1;
+      const t0 = Date.now();
+      e2e.detectNow();
+      const r = await waitAdvice(l, l.round, l.choice, 4_000);
+      const dotNow = await js(overlay, 'window.__overlayDot ?? null');
+      check('detect-hit', r.ok && !dotNow, `${Date.now() - t0}ms (target ~2000ms) dot=${JSON.stringify(dotNow)}`);
+      check(
+        'f8-registered',
+        e2e.getF8().registered === true || e2e.getF8().inUse === true,
+        JSON.stringify(e2e.getF8()),
+      );
+    }
     // --- the control window stays where it is put (capture on, test mode on, draft showing) ---
     {
       const spots = [

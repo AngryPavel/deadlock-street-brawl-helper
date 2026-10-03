@@ -15,6 +15,14 @@ export const CHANNELS = {
   captureStateGet: 'capture-state-get',
   captureState: 'capture-state',
   captureIdle: 'capture-idle',
+  // Detect now (F8 / button / tray): renderer -> main invoke to start a try, main -> renderer push to run it (any
+  // source); renderer -> main when a try missed (capture goes off and stays off) and when a capture start worked or failed.
+  detectNow: 'detect-now',
+  detectRun: 'detect-run',
+  detectMiss: 'detect-miss',
+  captureResult: 'capture-result',
+  detectKeyState: 'detect-key-state',
+  detectKeyGet: 'detect-key-get',
   platformWarning: 'platform-warning',
   // Tray menu "Debug panel" entry: main -> control window, toggles the hidden Debug panel.
   debugToggle: 'debug-toggle',

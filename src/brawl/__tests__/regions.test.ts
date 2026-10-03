@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import sharp from 'sharp';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   decodeIconIndex,
   draftRegions,
@@ -12,6 +12,10 @@ import {
   type RGBImage,
 } from '../recognise';
 import { items } from './testData';
+
+// Measured alone these take 1-2 s (recognise: 1.8 s, regions: ~1 s each); with the whole suite running in parallel on a
+// busy machine they pass the 5 s default, so this file gets 20 s. Nothing is skipped or weakened.
+vi.setConfig({ testTimeout: 20_000 });
 
 const index = decodeIconIndex(JSON.parse(readFileSync('public/data/brawl-icons.json', 'utf8')));
 const tierOf = (id: number) => items.find((i) => i.id === id)?.item_tier ?? 0;

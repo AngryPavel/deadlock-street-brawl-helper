@@ -51,6 +51,24 @@ const api = {
       ipcRenderer.removeListener(CHANNELS.captureState, listener);
     };
   },
+  detectNow: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.detectNow),
+  onDetectRun: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on(CHANNELS.detectRun, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.detectRun, listener);
+    };
+  },
+  detectMiss: () => ipcRenderer.send(CHANNELS.detectMiss),
+  captureResult: (ok: boolean) => ipcRenderer.send(CHANNELS.captureResult, ok),
+  getDetectKeyInUse: (): Promise<boolean> => ipcRenderer.invoke(CHANNELS.detectKeyGet),
+  onDetectKeyState: (cb: (inUse: boolean) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, inUse: boolean) => cb(inUse);
+    ipcRenderer.on(CHANNELS.detectKeyState, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.detectKeyState, listener);
+    };
+  },
   /** The draft (and its ability tip) is over: capture stopped, go back to probing. */
   captureIdle: () => ipcRenderer.send(CHANNELS.captureIdle),
   minimizeWindow: () => ipcRenderer.send(CHANNELS.windowMinimize),

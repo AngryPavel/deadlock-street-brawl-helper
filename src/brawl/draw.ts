@@ -1,6 +1,7 @@
 import type { CardRead } from './recognise';
 import { rerollButtonRect } from './recognise';
 import type { AbilityPanelData } from './abilities';
+import type { DotState } from './lobbyDot';
 
 export interface OverlayAdviceCard {
   itemId: number;
@@ -39,6 +40,8 @@ export interface OverlayState {
   panel: AbilityPanelData | null;
   /** The "Use Re-Roll" pill's outline found on the frame (frame px); absent: the nominal layout rect. */
   rerollRect?: { x0: number; y0: number; x1: number; y1: number } | null;
+  /** The lobby status dot (set by the main process, not the control window): absent while in a match. */
+  dot?: DotState | null;
 }
 
 /** The blank state: nothing to draw. */
@@ -263,4 +266,31 @@ export function scoresFromAdvice(advice: OverlayAdvice | null): Record<number, n
   const out: Record<number, number> = {};
   for (const r of advice?.ranked ?? []) out[r.itemId] = r.score;
   return out;
+}
+
+/** Where the lobby status dot sits on a canvas of this height: ~10 px diameter and a 12 px margin at 1080p. */
+export function dotGeometry(canvasH: number) {
+  const k = canvasH / 1080;
+  const r = (10 * k) / 2;
+  return { cx: 12 * k + r, cy: 12 * k + r, r };
+}
+export const DOT_COLORS: Record<DotState, string> = { watching: '', reading: '#f0a830', failed: '#8a9092' };
+
+/** Draws the status dot (teal watching / amber reading / grey failed, ~70 % opaque); returns what it drew. */
+export function drawDot(
+  ctx: CanvasRenderingContext2D,
+  state: DotState,
+  canvasH: number,
+  theme: OverlayTheme = readTheme(),
+) {
+  const g = dotGeometry(canvasH);
+  const color = DOT_COLORS[state] || theme.teal;
+  ctx.save();
+  ctx.globalAlpha = 0.7;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(g.cx, g.cy, g.r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  return { ...g, color, state };
 }

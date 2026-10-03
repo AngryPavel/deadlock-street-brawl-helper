@@ -54,6 +54,8 @@ const DRAFT_FPS = 15;
 // Dev only (a production build records nothing): timing summaries every 10 s, see src/perf.ts.
 const perf = createPerf(import.meta.env.DEV, 'brawl-view');
 const WAITING_STATUS = 'waiting for the draft screen';
+const NO_DRAFT_STATUS = 'No draft found';
+const DETECT_TIMEOUT_MS = 4000; // a try that gets no frame at all in this long counts as failed
 const CAPTURE_IDLE_MS = 4000; // no draft screen or tip for this long: stop capturing (real game only)
 const IDLE_FPS = 4;
 const ENEMY_SLOTS = 4;
@@ -82,6 +84,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const [owned, setOwned] = useState<number[]>([]);
   const [cards, setCards] = useState<Offer[]>([]);
   const [capture, setCapture] = useState<'off' | 'starting' | 'on'>('off');
+  const captureStateRef = useRef<'off' | 'starting' | 'on'>('off');
+  captureStateRef.current = capture;
   const [status, setStatus] = useState('');
   // Debounced "the item draft screen is up" and the ability tip that follows its closing (see abilityPanelTimer.ts).
   // The overlay draws nothing unless one of them is set.
@@ -98,6 +102,9 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const manualStopRef = useRef(false);
   const [platformWarning, setPlatformWarning] = useState<string | null>(null);
   const [draftSeen, setDraftSeen] = useState(false);
+  const [f8InUse, setF8InUse] = useState(false);
+  // A running Detect now try: pressed-at time; the first frame result decides hit or miss.
+  const detectRef = useRef<{ at: number; timer: ReturnType<typeof setTimeout> } | null>(null);
   const [took_, setTook] = useState<string>('');
   const workerRef = useRef<Worker | null>(null);
   const workerStartedRef = useRef(false); // the worker has been sent 'init' (capture loop running or resettable)
@@ -285,6 +292,40 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pushOverlay only reads refs
   }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById]);
 
+  /** Ends a Detect now try and logs `detect.manual` with the outcome. */
+  function finishDetect(outcome: 'hit' | 'miss' | 'failed') {
+    const d = detectRef.current;
+    if (!d) return;
+    clearTimeout(d.timer);
+    detectRef.current = null;
+    log('brawl-view', 'info', 'detect.manual', { outcome, ms: Math.round(performance.now() - d.at) });
+  }
+  /** F8 / the button / the tray: main has already turned capture on; the first frame result decides (see onMessage). */
+  const runDetect = () => {
+    if (!isElectron || detectRef.current) return; // presses during a running try are ignored
+    if (draftRef.current) {
+      log('brawl-view', 'info', 'detect.manual', { outcome: 'hit', ms: 0, already: true });
+      return;
+    }
+    const at = performance.now();
+    detectRef.current = {
+      at,
+      timer: setTimeout(() => {
+        finishDetect('failed');
+        setStatus('capture failed: no frame received');
+      }, DETECT_TIMEOUT_MS),
+    };
+    setStatus('Detecting…');
+    if (captureStateRef.current === 'off') {
+      manualStopRef.current = false;
+      setManualStop(false);
+      setDenied(false);
+      void startCapture();
+    }
+  };
+  const runDetectRef = useRef(runDetect);
+  runDetectRef.current = runDetect;
+
   const stopCapture = useCallback(() => {
     captureGenRef.current += 1;
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -377,6 +418,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       }
       if (gen !== captureGenRef.current) return; // superseded during the await above
       setCapture('on');
+      window.brawlAPI?.captureResult?.(true);
       setStatus('watching for the draft screen');
       log('brawl-view', 'info', 'capture.start');
       // Electron already draws its own always-on-top overlay window (electron/main.ts); the in-page
@@ -390,6 +432,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       } // getDisplayMedia already consumed this click's activation, so requestWindow may need a second click here; that's fine since capture already started
     } catch (e) {
       if (gen !== captureGenRef.current) return; // superseded — a newer attempt owns state now, don't clobber it
+      window.brawlAPI?.captureResult?.(false);
+      finishDetect('failed');
       stopCapture(); // clears status to '' — always re-set it below, never leave it blank
       const err = e as Error;
       // Only treat this as "Deadlock window not found" when main.ts's capture-denied IPC actually arrived
@@ -517,6 +561,17 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     return api.onGameRect((r) => setGameFound(!!r));
   }, []);
   useEffect(() => {
+    if (!isElectron) return;
+    const api = window.brawlAPI!;
+    void api.getDetectKeyInUse?.().then(setF8InUse);
+    const offKey = api.onDetectKeyState?.(setF8InUse);
+    const offRun = api.onDetectRun?.(() => runDetectRef.current());
+    return () => {
+      offKey?.();
+      offRun?.();
+    };
+  }, []);
+  useEffect(() => {
     if (draftOpen) setDraftSeen(true);
   }, [draftOpen]);
 
@@ -543,6 +598,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     if (!isElectron) return;
     return window.brawlAPI!.onCaptureDenied(() => {
       deniedIpcRef.current = true;
+      finishDetect('failed');
       setDenied(true);
       setStatus('Deadlock window not found');
     });
@@ -814,6 +870,17 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
       }
       setFps(r.shop);
       stepTracker(r.shop);
+      if (detectRef.current) {
+        if (r.shop) finishDetect('hit');
+        else {
+          finishDetect('miss');
+          captureWantedRef.current = false;
+          stopCapture();
+          setStatus(NO_DRAFT_STATUS);
+          window.brawlAPI!.detectMiss();
+          return;
+        }
+      }
       const heroDetected = r.accepted && r.meta!.self && r.meta!.self === heroId;
       const names = !r.shop
         ? 'waiting for the shop'
@@ -873,6 +940,8 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   };
   const statusLine = (() => {
     if (platformWarning) return platformWarning;
+    if (status === NO_DRAFT_STATUS && capture !== 'on') return status;
+    if (status === 'Detecting…') return status;
     if (capture === 'starting') return 'Capture starting…';
     if (capture === 'on') {
       if (draftOpen) return `Draft — round ${round}, choice ${choice}`;
@@ -883,6 +952,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     if (denied)
       return gameFound ? 'Capture denied — press Start to retry' : 'Deadlock window not found — press Start to retry';
     if (!isElectron) return status || 'Capture off — press Start';
+    if (gameFound && f8InUse) return 'F8 is in use by another program';
     if (!gameFound) return 'Deadlock window not found';
     return manualStop ? 'Capture stopped — press Start' : 'Deadlock found, capture off';
   })();
@@ -908,13 +978,26 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     <div className="brawl">
       <video ref={videoRef} muted playsInline style={{ display: 'none' }} />
       <div className="panel brawl-controls">
-        <button
-          className={capture === 'off' ? 'btn primary brawl-capture' : 'btn brawl-capture'}
-          onClick={capture === 'on' ? onStop : onStart}
-          disabled={capture === 'starting'}
-        >
-          {capture === 'on' ? 'Stop capture' : capture === 'starting' ? 'Starting…' : 'Start capture'}
-        </button>
+        <div className="brawl-buttons">
+          <button
+            className={capture === 'off' ? 'btn primary brawl-capture' : 'btn brawl-capture'}
+            onClick={capture === 'on' ? onStop : onStart}
+            disabled={capture === 'starting'}
+          >
+            {capture === 'on' ? 'Stop capture' : capture === 'starting' ? 'Starting…' : 'Start capture'}
+          </button>
+          {isElectron && (
+            <button
+              className="btn brawl-detect"
+              onClick={() => void window.brawlAPI!.detectNow()}
+              disabled={!gameFound}
+              title={gameFound ? 'Read the game once, now (F8)' : 'Deadlock not found'}
+            >
+              Detect now (F8)
+            </button>
+          )}
+        </div>
+        {isElectron && !gameFound && <div className="muted brawl-status">Deadlock not found</div>}
         <div className="muted brawl-status" role="status" aria-live="polite">
           {statusLine}
         </div>

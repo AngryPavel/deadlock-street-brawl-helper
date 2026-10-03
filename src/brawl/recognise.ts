@@ -869,6 +869,8 @@ function readGlyphBBox(
   y1: number,
   test: (r: number, g: number, b: number) => boolean,
   minWidth = 4,
+  /** A column counts as glyph only with this many lit pixels; 2 drops a lone stray pixel from a neighbour. */
+  minColPixels = 1,
 ): { gx0: number; gx1: number; gy0: number; gy1: number } | null {
   const on = (x: number, y: number) => {
     const [r, g, b] = rgb(img, x, y);
@@ -878,9 +880,9 @@ function readGlyphBBox(
     H = y1 - y0;
   const colHas: boolean[] = [];
   for (let x = 0; x < W; x++) {
-    let h = false;
-    for (let y = 0; y < H && !h; y++) h = on(x0 + x, y0 + y);
-    colHas.push(h);
+    let n = 0;
+    for (let y = 0; y < H && n < minColPixels; y++) if (on(x0 + x, y0 + y)) n++;
+    colHas.push(n >= minColPixels);
   }
   const gx0 = colHas.indexOf(true);
   if (gx0 < 0) return null;
@@ -908,12 +910,13 @@ export function readGlyph(
   x1: number,
   y1: number,
   test: (r: number, g: number, b: number) => boolean,
+  minColPixels = 1,
 ): Float32Array | null {
   const on = (x: number, y: number) => {
     const [r, g, b] = rgb(img, x, y);
     return test(r, g, b);
   };
-  const box = readGlyphBBox(img, x0, y0, x1, y1, test);
+  const box = readGlyphBBox(img, x0, y0, x1, y1, test, 4, minColPixels);
   if (!box) return null;
   const { gx0, gx1, gy0, gy1 } = box;
   const bw = gx1 - gx0 + 1,
@@ -943,14 +946,26 @@ const readDigit = (
 ): number => {
   const sx = (img.origin?.fullWidth ?? img.width) / BRAWL_LAYOUT.ref.width,
     sy = (img.origin?.fullHeight ?? img.height) / BRAWL_LAYOUT.ref.height;
-  const g = readGlyph(
-    img,
-    Math.round(box.x0 * sx),
-    Math.round(box.y0 * sy),
-    Math.round(box.x1 * sx),
-    Math.round(box.y1 * sy),
-    test,
-  );
+  const at = (minCol: number) =>
+    readGlyph(
+      img,
+      Math.round(box.x0 * sx),
+      Math.round(box.y0 * sy),
+      Math.round(box.x1 * sx),
+      Math.round(box.y1 * sy),
+      test,
+      minCol,
+    );
+  // Some window sizes (e.g. 1500-1600 px wide) leave a lone stray lit pixel from the neighbouring UI at the edge of
+  // the box, which stretches the glyph's bounding box and misses the template: retry ignoring one-pixel columns.
+  return matchDigit(at(1), digits, loose) || matchDigit(at(2), digits, loose);
+};
+
+const matchDigit = (
+  g: Float32Array | null,
+  digits: Record<number, Float32Array>,
+  loose: { maxDistance: number; ratio: number },
+): number => {
   if (!g) return 0;
   let best = 0,
     bestD = Infinity,

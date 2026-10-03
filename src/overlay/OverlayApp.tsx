@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   drawReads,
+  drawDot,
+  dotGeometry,
   gradesFromAdvice,
   overlayHasContent,
   scoresFromAdvice,
@@ -9,12 +11,15 @@ import {
 } from '../brawl/draw';
 import { ScoreTip } from '../components/ScoreTip';
 import { AbilityPanel } from '../components/AbilityPanel';
+import { DOT_TEXT, type DotState } from '../brawl/lobbyDot';
 import { log } from '../log';
 
 declare global {
   interface Window {
     __overlayDrawn?: DrawnRect[];
     __overlayAdvice?: OverlayState['advice'];
+    __overlayDot?: { cx: number; cy: number; r: number; color: string; state: DotState } | null;
+    __overlayDotTip?: string | null;
   }
 }
 
@@ -28,6 +33,8 @@ export default function OverlayApp() {
   const [panelState, setPanelState] = useState<OverlayState | null>(null);
   const drawnRef = useRef<DrawnRect[]>([]);
   const hoverRef = useRef<number | null>(null);
+  const dotRef = useRef<DotState | null>(null);
+  const [dotTip, setDotTip] = useState<DotState | null>(null);
   const [hover, setHover] = useState<{ itemId: number; x: number; y: number; flip: boolean } | null>(null);
 
   const draw = (state: OverlayState) => {
@@ -36,6 +43,9 @@ export default function OverlayApp() {
     const ctx = c.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, c.width, c.height);
+    const dot = state.dot ? drawDot(ctx, state.dot, c.height) : null;
+    dotRef.current = dot ? dot.state : null;
+    if (window.brawlAPI?.isE2E) window.__overlayDot = dot;
     if (!overlayHasContent(state) || !state.frameW || !state.frameH) {
       drawnRef.current = [];
       if (window.brawlAPI?.isE2E) {
@@ -75,6 +85,15 @@ export default function OverlayApp() {
   /** Hover: which plate (if any) is under the cursor. Does nothing unless a draft is on screen. */
   const onMove = (ev: MouseEvent) => {
     const st = stateRef.current;
+    const c0 = canvasRef.current;
+    if (c0 && dotRef.current) {
+      const g = dotGeometry(c0.height);
+      const near = Math.hypot(ev.clientX - g.cx, ev.clientY - g.cy) <= g.r + 6;
+      const next = near ? dotRef.current : null;
+      setDotTip((prev) => (prev === next ? prev : next));
+      if (window.brawlAPI?.isE2E) window.__overlayDotTip = next ? DOT_TEXT[next] : null;
+      if (near) return;
+    } else setDotTip((prev) => (prev === null ? prev : null));
     if (!st?.draft) return;
     const c = canvasRef.current;
     if (!c || !st.frameW) return;
@@ -107,6 +126,8 @@ export default function OverlayApp() {
     });
   };
   const clearHover = () => {
+    setDotTip(null);
+    if (window.brawlAPI?.isE2E) window.__overlayDotTip = null;
     if (hoverRef.current === null) return;
     hoverRef.current = null;
     setHover(null);
@@ -143,12 +164,16 @@ export default function OverlayApp() {
     }
     return api.onOverlayState((state) => {
       stateRef.current = state;
-      if (!state.draft) clearHover();
+      if (!state.draft) {
+        hoverRef.current = null;
+        setHover(null);
+      }
       setPanelState(state);
       draw(state);
     });
   }, []);
 
+  const c_ = dotTip && canvasRef.current ? dotGeometry(canvasRef.current.height) : null;
   const advice = panelState?.draft ? panelState.advice : null;
   const abilityPanel = panelState && !panelState.draft ? panelState.panel : null;
   const hovered = hover && advice ? advice.ranked.find((r) => r.itemId === hover.itemId) : null;
@@ -168,6 +193,11 @@ export default function OverlayApp() {
           card={hovered}
           style={{ left: hover.x, top: hover.y, transform: hover.flip ? 'translateX(-100%)' : undefined }}
         />
+      )}
+      {dotTip && c_ && (
+        <div className="overlay-dot-tip" style={{ left: c_.cx + c_.r + 8, top: c_.cy - 12 }}>
+          {DOT_TEXT[dotTip]}
+        </div>
       )}
       {abilityPanel && <AbilityPanel panel={abilityPanel} className="overlay-ap" />}
     </>

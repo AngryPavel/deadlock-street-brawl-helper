@@ -161,6 +161,16 @@ describe('BrawlView (Electron, real game: capture only around the draft)', () =>
     await waitFor(() => expect(calls()).toBe(1));
   });
 
+  it('shows Detect now (F8) beside Start capture, disabled with "Deadlock not found" without a game rect', async () => {
+    const { container } = render(<BrawlView {...props()} />);
+    await new Promise((r) => setTimeout(r, 50));
+    const detect = screen.getByRole('button', { name: /detect now \(f8\)/i }) as HTMLButtonElement;
+    const start = screen.getByRole('button', { name: /start capture/i });
+    expect(detect.disabled).toBe(true);
+    expect(detect.parentElement).toBe(start.parentElement);
+    expect(container.textContent).toContain('Deadlock not found');
+  });
+
   it('renders only the capture button, status line and how-to when Debug is hidden', async () => {
     const { container } = render(<BrawlView {...props()} />);
     await new Promise((r) => setTimeout(r, 50));
