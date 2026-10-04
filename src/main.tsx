@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import './local/overlay.css';
+import './local/forms.css';
 import { configureDataBase } from './data/load';
 import App from './App';
 import OverlayApp from './overlay/OverlayApp';

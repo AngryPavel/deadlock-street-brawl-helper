@@ -1,0 +1,15 @@
+/* Chromium's Windows select popup can keep a light background despite the page's dark scheme. */
+select {
+  color-scheme: dark;
+}
+
+select option,
+select optgroup {
+  background-color: var(--bg-raised, #171e1d);
+  color: var(--text, #eee5d8);
+}
+
+select option:checked {
+  background-color: var(--teal, #2ec4b6);
+  color: var(--teal-ink, #0b2724);
+}
