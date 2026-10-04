@@ -10,6 +10,7 @@ import {
   isShopScreen,
   readDraftMeta,
   readRoundChoice,
+  readPlayerHero,
   readDraftScreen,
   readInventory,
   type CardRead,
@@ -23,9 +24,11 @@ import { CardNameRecovery, serialFrames } from '../local/cardRecognition';
 import { stopItemNameOCR } from '../local/cardNameOcr';
 import { InventoryConfirmation } from '../local/inventoryConfirmation';
 import { DraftOfferLock } from '../local/draftOfferLock';
-import { CardNameConfirmation } from '../local/cardNameConfirmation';
+import { CardNameConfirmation, strongDirectCard } from '../local/cardNameConfirmation';
 import { cardNameRegions, hasItemNameInk } from '../local/cardNames';
+import { SelfHeroConfirmation, type SelfHeroObservation } from '../local/selfHeroConfirmation';
 import { TeamRosterConfirmation, type TeamRoster } from '../local/teamWinRate';
+import { FirstRoundPreparation, hasRoundCountdown } from '../local/firstRoundPreparation';
 import type { IconIndex } from './types';
 
 export interface FrameRegion {
@@ -38,13 +41,14 @@ export interface FrameRegion {
 
 export type WorkerIn =
   | { type: 'warm'; index: IconIndex; tiers: Record<number, number> }
-  | { type: 'init'; index: IconIndex; tiers: Record<number, number>; intervalMs: number }
+  | { type: 'init'; index: IconIndex; tiers: Record<number, number>; intervalMs: number; captureEpoch?: number }
   // A draft frame is only the rectangles the recogniser reads (draftRegions), each with its own pixels: the worker
   // pastes them into a reused frame-sized buffer, so nothing outside them is ever copied out of the video.
-  | { type: 'frame'; width: number; height: number; regions: FrameRegion[]; prefer: number[] }
+  | { type: 'frame'; captureEpoch?: number; width: number; height: number; regions: FrameRegion[]; prefer: number[] }
   // Off the draft screen the page copies just the "CHOICE n OF 3" crop (see shopProbeRect) instead of a whole frame.
   | {
       type: 'probe';
+      captureEpoch?: number;
       frameW: number;
       frameH: number;
       x: number;
@@ -54,7 +58,7 @@ export type WorkerIn =
       buffer: ArrayBuffer;
     }
   | { type: 'idle' } // the page had no frame ready for the last tick
-  | { type: 'reset' } // capture (re)started: forget the last draft and start ticking again
+  | { type: 'reset'; captureEpoch?: number } // capture (re)started: forget the last draft and start ticking again
   | { type: 'stop' }; // capture stopped: forget the last draft and free the OCR engine; the worker then stays silent
 
 /** The worker paces the capture: it asks the page for a frame, reads it, waits, asks again. Page timers are
@@ -62,12 +66,27 @@ export type WorkerIn =
  *  browser tab is hidden; worker timers are not, so the advice keeps updating without alt-tabbing. */
 export type WorkerOut =
   | FrameResult
-  | { type: 'tick'; full: boolean } // full: send a whole frame; otherwise just the probe crop
-  | { type: 'rerolls'; forKey: string; forRound: number; forChoice: number; rerollsRemaining: number; spent: boolean };
+  | { type: 'tick'; full: boolean; captureEpoch?: number } // full: send a whole frame; otherwise just the probe crop
+  | {
+      type: 'rerolls';
+      captureEpoch?: number;
+      forKey: string;
+      forRound: number;
+      forChoice: number;
+      rerollsRemaining: number;
+      spent: boolean;
+    };
 
 export interface FrameResult {
+  /** Fixed preparation caption evidence, independent of whether the item draft is open. */
+  roundCountdown?: boolean;
+  /** Actual top ROUND glyph, also read on a non-shop preparation frame. */
+  preparationRound?: number;
+  /** Distinct full capture sample, so repeated delivery cannot confirm a contradictory ROUND glyph. */
+  preparationSample?: number;
+  captureEpoch?: number;
   teamRoster?: TeamRoster | null;
-  transition?: 'initial' | 'choice' | 'round' | 'reroll' | 'metadata' | 'reacquire';
+  transition?: 'initial' | 'choice' | 'round' | 'reroll' | 'metadata' | 'reacquire' | 'hero';
   pendingTransition?: boolean;
   pending?: boolean;
   type: 'result';
@@ -90,14 +109,20 @@ let lastKey = '',
 const inventoryConfirmation = new InventoryConfirmation();
 const offerLock = new DraftOfferLock();
 const teamRoster = new TeamRosterConfirmation();
+const preparation = new FirstRoundPreparation();
+let frameCountdown = false;
+let preparationRound = 0;
+let preparationSample = 0;
+const selfHeroConfirmation = new SelfHeroConfirmation();
 let offerEpoch = 0;
+let captureEpoch = 0;
 let closedSince: number | null = null;
 let committedCardSigs: Uint8Array[] = [];
 let pendingCardSigs: Uint8Array[] = [];
 let visualEpoch = 0;
 let pendingDirect = false;
 let pendingNames = false;
-let pendingRawComplete = false;
+let pendingStrong: boolean[] = [];
 let candidateCardSigs: Uint8Array[] = [];
 let candidateCardKey = '';
 let awaitingNames = false;
@@ -228,6 +253,10 @@ let previousBarSig: Uint8Array | null = null;
 let previousRound = 0;
 
 const forgetDraft = () => {
+  preparation.reset();
+  frameCountdown = false;
+  preparationRound = 0;
+  preparationSample = 0;
   lastKey = acceptedKey = '';
   offerEpoch++;
   offerLock.reset();
@@ -251,6 +280,7 @@ const forgetDraft = () => {
   wasShop = false;
   settledSig = pendingSig = null;
   knownHero = null;
+  selfHeroConfirmation.reset();
   acceptedRound = acceptedChoice = 0;
   previousBarSig = null;
   previousRound = 0;
@@ -267,6 +297,29 @@ const stage = <T>(name: string, fn: () => T): T => {
   } finally {
     stages[name] = performance.now() - t;
   }
+};
+const metaSelf = (meta: DraftMeta): SelfHeroObservation | null => {
+  if (!meta.self) return null;
+  for (const side of ['left', 'right'] as const) {
+    const slot = meta.bar[side].findIndex((m) => m.heroId === meta.self);
+    if (slot >= 0) return { heroId: meta.self, side, slot };
+  }
+  return null;
+};
+const readMetadata = (
+  img: ReturnType<typeof pasteRegions>,
+  idx: DecodedIndex,
+  round: number,
+  known?: { bar: DraftMeta['bar']; self: number },
+) => {
+  const meta = readDraftMeta(img, idx, known, round !== 1);
+  if (!known) {
+    selfHeroConfirmation.observe(metaSelf(meta), captureSequence, performance.now());
+    if (round === 1 && !teamRoster.value) teamRoster.observe(meta);
+  }
+  meta.self = selfHeroConfirmation.value?.heroId ?? 0;
+  meta.rerollsRemaining = rerollCounter.value ?? meta.rerollsRemaining;
+  return meta;
 };
 // Pre-bake: the hero bar (eight portraits) is the slowest read, about 0.8 s, and it is the same for the whole match.
 // Keep the last read with a fingerprint of the bar's pixels; a later draft screen whose bar still matches reuses it
@@ -289,11 +342,28 @@ const sameBar = (a: Uint8Array, b: Uint8Array) => {
   for (let i = 0; i < a.length; i++) if (Math.abs(a[i]! - b[i]!) > 40 && ++changed > BAR_SIG_MAX_CHANGED) return false;
   return true;
 };
-const post = (m: WorkerOut) => (self as unknown as { postMessage(m: unknown): void }).postMessage(m);
+const post = (m: WorkerOut) => {
+  if (m.type === 'result') {
+    const wasPreparation = preparation.visible;
+    preparation.observe(
+      {
+        shop: m.shop,
+        round: m.shop ? m.round : preparationRound,
+        countdown: frameCountdown,
+        confirmedRound: m.shop && m.accepted,
+        sample: preparationSample,
+      },
+      performance.now(),
+    );
+    if (wasPreparation && !preparation.visible && !m.shop) teamRoster.reset();
+    m = { ...m, roundCountdown: frameCountdown, preparationRound, preparationSample };
+  }
+  (self as unknown as { postMessage(m: unknown): void }).postMessage({ ...m, captureEpoch });
+};
 let timer: ReturnType<typeof setTimeout> | undefined;
 const tick = (after: number, full: boolean) => {
   clearTimeout(timer);
-  timer = setTimeout(() => post({ type: 'tick', full }), after);
+  timer = setTimeout(() => post({ type: 'tick', full: full || preparation.visible }), after);
 }; // one chain, even if the page sent two frames
 
 self.addEventListener(
@@ -317,6 +387,7 @@ self.addEventListener(
         return;
       }
       if (msg.type === 'init' || msg.type === 'reset') {
+        captureEpoch = msg.captureEpoch ?? captureEpoch;
         if (msg.type === 'init') {
           index ??= decodeIconIndex(msg.index);
           tiers = msg.tiers;
@@ -325,17 +396,25 @@ self.addEventListener(
         }
         forgetDraft();
         warmOCR(); // capture only runs around the draft now: load the OCR engine with it (freed again on 'stop')
-        tick(0, false);
+        tick(0, true); // F8 may begin after all item picks: read the countdown and ROUND once too.
         return;
       }
       if (msg.type === 'idle') {
         tick(intervalMs, false);
         return;
       }
+      if (
+        (msg.type === 'frame' || msg.type === 'probe') &&
+        msg.captureEpoch !== undefined &&
+        msg.captureEpoch !== captureEpoch
+      )
+        return;
       if (!index) return;
       const idx = index; // narrowed for the stage closures below
       const t0 = performance.now();
       if (msg.type === 'probe') {
+        frameCountdown = false;
+        preparationRound = 0;
         const crop = {
           width: msg.width,
           height: msg.height,
@@ -358,10 +437,13 @@ self.addEventListener(
         return;
       }
       stages = DEV ? {} : undefined;
+      preparationSample++;
       const img = stage('paste', () => pasteRegions(msg.width, msg.height, msg.regions));
       // Skip card/inventory recognition entirely off the shop screen (menus, gameplay, the round-end transition
       // into the next shop) -- isShopScreen is one small glyph read instead of three full icon searches.
       const labels = readRoundChoice(img);
+      frameCountdown = stage('countdown', () => hasRoundCountdown(img));
+      preparationRound = labels.round;
       if (labels.choice === 0) {
         const cardsRemain =
           acceptedKey &&
@@ -426,6 +508,24 @@ self.addEventListener(
       const inventoryRects = inventoryRegions(img.width, img.height);
       const sig = frameSig(msg.regions, inventoryRects);
       const bsig = barSig(img);
+      let heroTransition: 'hero' | 'metadata' | undefined;
+      if (acceptedKey && selfHeroConfirmation.due(performance.now())) {
+        const previous = selfHeroConfirmation.value;
+        const observation = stage('self', () => readPlayerHero(img, idx));
+        if (selfHeroConfirmation.observe(observation, captured, performance.now())) {
+          heroTransition = previous ? 'hero' : 'metadata';
+          // The corrected side can have a different opposing team: refresh once without cached identity.
+          if (previous) teamRoster.reset();
+          settledMeta = stage('meta', () => readMetadata(img, idx, acceptedRound));
+          settledMeta.round = acceptedRound;
+          settledMeta.choice = acceptedChoice;
+          if (completeRoster(settledMeta)) {
+            matchBar = { bar: settledMeta.bar, self: settledMeta.self, sig: bsig };
+            knownHero = matchBar;
+          } else knownHero = null;
+          settledBarSig = bsig;
+        }
+      }
       const rosterChanged = !!matchBar && !sameBar(matchBar.sig, bsig);
       if (rosterChanged) knownHero = null;
       const matchBoundary = !!previousBarSig && !sameBar(previousBarSig, bsig);
@@ -467,10 +567,10 @@ self.addEventListener(
         changedSlots === 0
       ) {
         offerLock.observe({ key: acceptedKey, round: acceptedRound, choice: acceptedChoice }, performance.now());
-        let recoveredMeta = false;
+        let recoveredMeta = !!heroTransition;
         if (!completeMetadata(settledMeta) && performance.now() >= nextMetaRetryAt) {
-          settledMeta = stage('meta', () => readDraftMeta(img, idx, undefined, acceptedRound !== 1));
-          if (acceptedRound === 1) teamRoster.observe(settledMeta);
+          const previouslyKnownSelf = settledMeta?.self ?? 0;
+          settledMeta = stage('meta', () => readMetadata(img, idx, acceptedRound));
           settledMeta.round = acceptedRound;
           settledMeta.choice = acceptedChoice;
           nextMetaRetryAt = performance.now() + 500;
@@ -478,7 +578,7 @@ self.addEventListener(
             matchBar = { bar: settledMeta.bar, self: settledMeta.self, sig: bsig };
             knownHero = matchBar;
             // Earlier inventory may precede a full roster read. Re-publish it after roster confirmation.
-            if (!rosterInventoryReplayed) {
+            if (!rosterInventoryReplayed && previouslyKnownSelf) {
               inventoryConfirmation.reset();
               inventory = null;
               rosterInventoryReplayed = true;
@@ -497,7 +597,7 @@ self.addEventListener(
           reads: offerLock.awaitingReroll ? [] : settledReads,
           key: offerLock.awaitingReroll ? '' : acceptedKey,
           accepted: recoveredMeta && !offerLock.awaitingReroll,
-          transition: recoveredMeta ? 'metadata' : undefined,
+          transition: recoveredMeta ? (heroTransition ?? 'metadata') : undefined,
           meta: settledMeta,
           teamRoster: teamRoster.value,
           inventory,
@@ -517,9 +617,8 @@ self.addEventListener(
       const confirmed =
         lastKey !== '' && pendingChoice === labels.choice && sameSig(pendingSig, sig) && samePendingIcons;
       let reads = confirmed ? pendingReads : stage('cards', () => readDraftScreen(img, idx, (id) => tiers[id] ?? 0));
-      const strongIcon = (r: CardRead) => r.present && r.match?.score >= 0.82 && r.match.margin >= 0.08;
-      const rawComplete = confirmed ? pendingRawComplete : reads.length === 3 && reads.every((r) => r.present);
-      const direct = confirmed ? pendingDirect : reads.length === 3 && reads.every(strongIcon);
+      const strong = confirmed ? pendingStrong : reads.map(strongDirectCard);
+      const direct = confirmed ? pendingDirect : reads.length === 3 && strong.every(Boolean);
       let nameCorroborated = confirmed && pendingNames;
       const readGeneration = recovery.generation;
       const epoch = offerEpoch;
@@ -545,14 +644,14 @@ self.addEventListener(
       const sameCommittedLabels =
         labels.choice === acceptedChoice && (labels.round === 0 || labels.round === acceptedRound);
       if (
-        rawComplete &&
         namesVisible &&
         !direct &&
         !nameCorroborated &&
-        changedSlots === 3 &&
         key &&
-        key !== acceptedKey &&
-        (sameCommittedLabels || offerLock.pendingLabels?.reason === 'reacquire')
+        (!acceptedKey ||
+          offerLock.settling ||
+          offerLock.awaitingReroll ||
+          (key !== acceptedKey && changedSlots === 3 && sameCommittedLabels))
       ) {
         awaitingNames = true;
         post({
@@ -574,6 +673,7 @@ self.addEventListener(
           reads,
           names,
           `${labels.round}:${labels.choice}:${visualEpoch}`,
+          strong,
         );
         if (readGeneration !== recovery.generation || epoch !== offerEpoch) return;
       }
@@ -584,7 +684,7 @@ self.addEventListener(
       if (restore) offerLock.restoreCurrent();
       const commit =
         offerLock.observe(
-          { key: namesVisible ? key : '', round: labels.round, choice: labels.choice },
+          { key: namesVisible && (direct || nameCorroborated) ? key : '', round: labels.round, choice: labels.choice },
           performance.now(),
           inventoryPick,
           { visual: visualEpoch, direct, nameCorroborated, changedSlots, frame: captured },
@@ -602,6 +702,9 @@ self.addEventListener(
         acceptedRound = offerLock.current!.round;
         acceptedChoice = offerLock.current!.choice;
         if (previousRound > 1 && acceptedRound === 1) {
+          preparation.reset(); // a committed first round after a later round is a new match
+          selfHeroConfirmation.reset();
+          knownHero = null;
           inventoryConfirmation.reset();
           inventory = null;
         }
@@ -610,14 +713,15 @@ self.addEventListener(
         accepted = true;
         if (!knownHero && matchBar && sameBar(matchBar.sig, bsig)) knownHero = matchBar;
         meta = stage('meta', () =>
-          readDraftMeta(
+          readMetadata(
             img,
             idx,
-            acceptedRound === 1 && !teamRoster.value ? undefined : (knownHero ?? undefined),
-            acceptedRound !== 1,
+            acceptedRound,
+            !selfHeroConfirmation.value || (acceptedRound === 1 && !teamRoster.value)
+              ? undefined
+              : (knownHero ?? undefined),
           ),
         );
-        if (acceptedRound === 1 && !teamRoster.value) teamRoster.observe(meta);
         meta.round = acceptedRound;
         meta.choice = acceptedChoice;
         if (completeRoster(meta)) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
@@ -638,7 +742,7 @@ self.addEventListener(
         pendingReads = reads;
         pendingCardSigs = iconSigs;
         pendingDirect = direct;
-        pendingRawComplete = rawComplete;
+        pendingStrong = strong;
       }
       pendingNames = nameCorroborated;
       pendingChoice = labels.choice;
@@ -672,7 +776,7 @@ const nonShopResult = (t0: number): FrameResult => {
     if (acceptedKey) offerEpoch++;
     lastKey = acceptedKey = '';
     offerLock.reset();
-    teamRoster.reset();
+    if (!preparation.visible) teamRoster.reset();
     committedCardSigs = [];
     inventoryConfirmation.reset();
     settledMeta = null;

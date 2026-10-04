@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { drawReads, itemCircle, type OverlayTheme } from '../draw';
 import type { CardRead } from '../recognise';
+import { cardSlotSelection } from '../../local/cardSlotSelection';
 
 const read = (itemId: number, x: number): CardRead => ({
   card: 'x',
@@ -55,6 +56,43 @@ const run = (ctx: CanvasRenderingContext2D, reroll = false, sx = 1, sy = 1) =>
   drawReads(ctx, [read(1, 10), read(2, 200)], 1, sx, sy, 2560, 1440, reroll, SCORES, null, GRADES, THEME);
 
 describe('drawReads', () => {
+  it('draws at most one TAKE for duplicated IDs with legacy item-ID-only callers', () => {
+    const ctx = stubCtx();
+    const drawn = drawReads(ctx, [read(1, 10), read(1, 200)], 1, 1, 1, 2560, 1440, false, SCORES, null, GRADES, THEME);
+    expect(drawn.map((rect) => rect.kind)).toEqual(['best', 'card']);
+    expect(drawn.map((rect) => rect.readIndex)).toEqual([0, 1]);
+    expect(ctx.ellipse).toHaveBeenCalledTimes(1);
+    expect(ctx.texts.filter((text) => text.text === 'TAKE')).toHaveLength(1);
+  });
+
+  it('draws each duplicate variant score and tier on its own plate and recommends only the stronger enhanced slot', () => {
+    const ctx = stubCtx();
+    const reads = [
+      { ...read(1, 10), card: 'left' },
+      { ...read(1, 200), card: 'right', enhanced: true },
+    ];
+    const card = { itemId: 1, name: 'Item', enhanced: false, score: 2, grade: 'B', usage: 0, winRate: null, rows: [] };
+    const advice = {
+      hero: 'Graves',
+      round: 4,
+      choice: 3,
+      reroll: null,
+      status: 'Ready',
+      ranked: [{ ...card, enhanced: true, score: 5, grade: 'S' }, card],
+    };
+    const slots = cardSlotSelection(reads, 1, advice);
+    const drawn = drawReads(ctx, reads, 1, 1, 1, 2560, 1440, false, SCORES, null, GRADES, THEME, slots);
+    expect(drawn.map((rect) => [rect.kind, rect.score])).toEqual([
+      ['card', 2],
+      ['best', 5],
+    ]);
+    expect(ctx.texts.map((text) => text.text)).toEqual(['B', 'Score: 2.00', 'S', 'Score: 5.00', 'TAKE']);
+    expect(ctx.ellipse).toHaveBeenCalledTimes(1);
+    const rerolled = drawReads(ctx, reads, 1, 1, 1, 2560, 1440, true, SCORES, null, GRADES, THEME, slots);
+    expect(rerolled.filter((rect) => rect.kind === 'best')).toHaveLength(0);
+    expect(rerolled.filter((rect) => rect.kind === 'reroll')).toHaveLength(1);
+  });
+
   it('outlines only the best card, as a circle', () => {
     const ctx = stubCtx();
     run(ctx);

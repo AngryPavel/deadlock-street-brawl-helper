@@ -2,6 +2,9 @@ import { cardAnchors, type CardRead, type RGBImage } from '../brawl/recognise';
 import { cardNameRegions, itemNameCrop } from './cardNames';
 import { readItemName } from './cardNameOcr';
 
+export const strongDirectCard = (read: CardRead) =>
+  read.present && read.match?.score >= 0.82 && read.match.margin >= 0.08;
+
 const normalise = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
 /** Late correction requires exact independent text, unlike the ordinary fuzzy missing-icon fallback. */
 export function exactCardNameId(text: string, confidence: number, names: Record<string, string>): number {
@@ -13,7 +16,7 @@ export function exactCardNameId(text: string, confidence: number, names: Record<
 
 export class CardNameConfirmation {
   private generation = 0;
-  private cache = new Map<string, Promise<boolean>>();
+  private cache = new Map<string, { result: Promise<boolean>; retryAt: number }>();
   private readText: typeof readItemName;
   constructor(readText = readItemName) {
     this.readText = readText;
@@ -22,7 +25,13 @@ export class CardNameConfirmation {
     this.generation++;
     this.cache.clear();
   }
-  async confirm(img: RGBImage, reads: CardRead[], names: Record<string, string>, candidate: string) {
+  async confirm(
+    img: RGBImage,
+    reads: CardRead[],
+    names: Record<string, string>,
+    candidate: string,
+    direct = reads.map(strongDirectCard),
+  ) {
     if (reads.length !== 3 || reads.some((r) => !r.present)) return false;
     const regions = cardNameRegions(img.width, img.height, cardAnchors(img.width, img.height));
     // Copy every crop before awaiting: the worker's shared frame buffer may be reused meanwhile.
@@ -32,12 +41,15 @@ export class CardNameConfirmation {
       for (let i = 0; i < crop.data.length; i += 4) hash = Math.imul(hash ^ crop.data[i]!, 16777619);
       return hash >>> 0;
     });
-    const key = `${candidate}:${reads.map((r) => r.itemId).join(',')}:${signatures.join(',')}`;
+    const strong = direct;
+    const key = `${candidate}:${strong.map(Number).join('')}:${reads.map((r) => r.itemId).join(',')}:${signatures.join(',')}`;
     const previous = this.cache.get(key);
-    if (previous) return previous;
+    if (previous && previous.retryAt > Date.now()) return previous.result;
     const generation = this.generation;
+    const entry = { result: Promise.resolve(false), retryAt: Infinity };
     const result = Promise.all(
       crops.map(async (crop, slot) => {
+        if (strong[slot]) return true;
         try {
           const text = await this.readText(crop);
           return exactCardNameId(text.text, text.confidence, names) === reads[slot]!.itemId;
@@ -45,9 +57,14 @@ export class CardNameConfirmation {
           return false;
         }
       }),
-    ).then((agree) => generation === this.generation && agree.every(Boolean));
+    ).then((agree) => {
+      const confirmed = generation === this.generation && agree.every(Boolean);
+      if (!confirmed) entry.retryAt = Date.now() + 1000;
+      return confirmed;
+    });
     if (this.cache.size >= 24) this.cache.delete(this.cache.keys().next().value!);
-    this.cache.set(key, result);
+    entry.result = result;
+    this.cache.set(key, entry);
     return result;
   }
 }

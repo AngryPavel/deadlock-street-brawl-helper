@@ -4,6 +4,7 @@
 import type { IconIndex } from './types';
 import { cardNameRegions } from '../local/cardNames';
 import { hudLayout } from '../local/hudLayout';
+import { roundCountdownRegion } from '../local/firstRoundPreparation';
 export { hudLayout } from '../local/hudLayout';
 
 export interface RGBImage {
@@ -689,7 +690,7 @@ function readSelfSlot(img: RGBImage): { left: number; right: number } {
     }
     return n;
   };
-  const tile = (cx: number) => {
+  const tile = (cx: number, brightOnly = false) => {
     let best = 0;
     for (let xl = Math.round(cx - 1.3 * R); xl <= cx - 0.7 * R; xl++) {
       if (run(xl) < rows * SELF_TILE.edgeRun) continue;
@@ -699,19 +700,30 @@ function readSelfSlot(img: RGBImage): { left: number; right: number } {
           inR = meanRect(img, xr - 12, cb, xr - 4, ce);
         const outL = meanRect(img, xl - 10, cb, xl - 4, ce),
           outR = meanRect(img, xr + 4, cb, xr + 10, ce);
+        if (
+          brightOnly &&
+          (inL.reduce((a, v) => a + v, 0) <= outL.reduce((a, v) => a + v, 0) ||
+            inR.reduce((a, v) => a + v, 0) <= outR.reduce((a, v) => a + v, 0))
+        )
+          continue;
         best = Math.max(best, Math.min(colourDiff(inL, outL), colourDiff(inR, outR)) - colourDiff(inL, inR) / 2);
       }
     }
     return best;
   };
-  const scores = [...HERO_BAR.left, ...HERO_BAR.right].map((x) => tile(offsetX + x * sx));
-  const tiles = scores.filter((v) => v > 0).length;
-  const order = scores.map((_, i) => i).sort((p, q) => scores[q] - scores[p]);
-  const ok =
-    tiles <= SELF_TILE.maxTiles && scores[order[0]] >= SELF_TILE.minScore && scores[order[0]] >= 2 * scores[order[1]];
-  if (!ok) return { left: -1, right: -1 };
-  const k = order[0];
-  return k < HERO_BAR.left.length ? { left: k, right: -1 } : { left: -1, right: k - HERO_BAR.left.length };
+  const select = (brightOnly: boolean) => {
+    const scores = [...HERO_BAR.left, ...HERO_BAR.right].map((x) => tile(offsetX + x * sx, brightOnly));
+    const tiles = scores.filter((v) => v > 0).length;
+    const order = scores.map((_, i) => i).sort((p, q) => scores[q] - scores[p]);
+    const ok =
+      tiles <= SELF_TILE.maxTiles && scores[order[0]] >= SELF_TILE.minScore && scores[order[0]] >= 2 * scores[order[1]];
+    if (!ok) return { left: -1, right: -1 };
+    const k = order[0];
+    return k < HERO_BAR.left.length ? { left: k, right: -1 } : { left: -1, right: k - HERO_BAR.left.length };
+  };
+  const original = select(false);
+  // A neighboring dark gap can share the selected tile's vertical edge. Require inward brightness only on ambiguity.
+  return original.left >= 0 || original.right >= 0 ? original : select(true);
 }
 
 /** The player's hero id from the bar, or 0 when the square-topped slot is missing or unreadable. */
@@ -719,6 +731,17 @@ function selfHero(bar: HeroBar, self: { left: number; right: number }): number {
   if (self.left >= 0) return bar.left[self.left]?.heroId ?? 0;
   if (self.right >= 0) return bar.right[self.right]?.heroId ?? 0;
   return 0;
+}
+
+/** Fresh self marker plus its single portrait; never reuses a cached bar or hero. */
+export function readPlayerHero(img: RGBImage, index: DecodedIndex) {
+  const selected = readSelfSlot(img);
+  const side: 'left' | 'right' | null = selected.left >= 0 ? 'left' : selected.right >= 0 ? 'right' : null;
+  if (!side) return null;
+  const slot = selected[side];
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
+  const match = matchHero(img, index, offsetX + HERO_BAR[side][slot]! * sx, HERO_BAR.cy * sy, HERO_BAR.diameter * sx);
+  return match.heroId ? { heroId: match.heroId, side, slot } : null;
 }
 
 /** The opposing team's hero ids, given the player's hero; empty when the player's hero is on neither side. */
@@ -1163,6 +1186,7 @@ export function draftRegions(width: number, height: number): Region[] {
     }),
     ...inventoryRegions(width, height),
     ...cardNameRegions(width, height, cardAnchors(width, height)),
+    roundCountdownRegion(width, height),
   ];
 }
 

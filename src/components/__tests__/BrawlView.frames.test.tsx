@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { FrameResult, WorkerOut } from '../../brawl/worker';
+import type { FrameResult, WorkerOut, WorkerIn } from '../../brawl/worker';
 import type { OverlayState } from '../../brawl/draw';
 import type { Ability, Hero, Item } from '../../types';
 import { DEFAULT_OVERLAY_SETTINGS } from '../../local/overlaySettings';
@@ -13,9 +13,17 @@ const readJson = (rel: string) =>
 vi.mock('../../data/load', () => ({ j: (rel: string) => Promise.resolve(readJson(rel)), img: (p?: string) => p }));
 let listener: ((event: MessageEvent<WorkerOut>) => void) | undefined;
 const sent: OverlayState[] = [];
+const workerMessages: WorkerIn[] = [];
+let detectRun: (() => void) | undefined;
 (window as unknown as { brawlAPI: unknown }).brawlAPI = {
   getGameRect: () => Promise.resolve(null),
   onGameRect: () => () => {},
+  onDetectRun: (cb: () => void) => {
+    detectRun = cb;
+    return () => {
+      detectRun = undefined;
+    };
+  },
   getCaptureState: () => Promise.resolve({ wanted: false, probe: false }),
   onCaptureState: () => () => {},
   onCaptureDenied: () => () => {},
@@ -25,7 +33,9 @@ const sent: OverlayState[] = [];
   sendOverlayState: (state: OverlayState) => sent.push(structuredClone(state)),
 };
 (globalThis as unknown as { Worker: unknown }).Worker = class {
-  postMessage() {}
+  postMessage(message: WorkerIn) {
+    workerMessages.push(message);
+  }
   terminate() {}
   addEventListener(_: string, callback: typeof listener) {
     listener = callback;
@@ -39,6 +49,8 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   sent.length = 0;
+  workerMessages.length = 0;
+  detectRun = undefined;
   listener = undefined;
 });
 
@@ -201,4 +213,236 @@ it('clears old item advice after a debounced closed screen and before the abilit
     } as MessageEvent<WorkerOut>),
   );
   expect(sent.at(-1)?.advice?.rerollsRemaining).toBe(1);
+});
+
+it('F8 clears current advice immediately, forces independent reset reads, and rejects results from older capture generations', async () => {
+  const heroes = readJson('heroes.json') as Hero[],
+    items = readJson('items.json') as Item[],
+    abilities = readJson('abilities.json') as Ability[];
+  const hero = heroes.find((h) => h.id === 1)!,
+    onNewMatch = vi.fn();
+  const ids = ['Swift Striker', 'Quicksilver Reload', 'Spirit Shielding'].map(
+    (name) => items.find((i) => i.name === name)!.id,
+  );
+  const track = { stop: vi.fn(), addEventListener: vi.fn(), applyConstraints: () => Promise.resolve() };
+  (navigator as unknown as { mediaDevices: unknown }).mediaDevices = {
+    getDisplayMedia: () => Promise.resolve({ getTracks: () => [track], getVideoTracks: () => [track] }),
+  };
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+  render(
+    <BrawlView
+      hero={hero}
+      heroes={heroes}
+      items={items}
+      abilities={abilities}
+      onHero={() => {}}
+      onNewMatch={onNewMatch}
+      debug
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: /start capture/i }));
+  await waitFor(() => expect(listener).toBeTypeOf('function'));
+  const initialEpoch = (workerMessages.find((m) => m.type === 'init') as Extract<WorkerIn, { type: 'init' }>)
+    .captureEpoch!;
+  const full: FrameResult = {
+    type: 'result',
+    captureEpoch: initialEpoch,
+    shop: true,
+    round: 4,
+    choice: 1,
+    accepted: true,
+    transition: 'initial',
+    key: ids.join(','),
+    reads: ids.map((itemId, slot) => ({
+      card: String(slot),
+      itemId,
+      present: true,
+      tier: 1,
+      rare: false,
+      enhanced: false,
+      match: { itemId, x: slot * 200, y: 200, edge: 185, score: 1, margin: 1 },
+    })),
+    inventory: [items.find((i) => i.name === 'Extra Stamina')!.id],
+    ms: 0,
+    meta: {
+      self: 1,
+      round: 4,
+      choice: 1,
+      bar: {
+        left: [{ heroId: 1, score: 1, margin: 1 }],
+        right: [2, 3, 4, 5].map((heroId) => ({ heroId, score: 1, margin: 1 })),
+      },
+      rerollsRemaining: 1,
+    },
+  };
+  const deliver = async (frame: FrameResult) => act(async () => listener!({ data: frame } as MessageEvent<WorkerOut>));
+  await deliver(full);
+  await deliver({ ...full, accepted: false });
+  expect(sent.at(-1)?.advice?.ranked).toHaveLength(3);
+  expect(onNewMatch).not.toHaveBeenCalled();
+  expect(screen.getByRole('heading', { name: 'Owned (1)' })).toBeTruthy();
+  await act(async () => detectRun!());
+  expect(sent.at(-1)?.advice).toBeNull();
+  expect(sent.at(-1)?.reads).toEqual([]);
+  let reset = workerMessages.filter((m): m is Extract<WorkerIn, { type: 'reset' }> => m.type === 'reset').at(-1)!;
+  expect(reset.captureEpoch).toBeGreaterThan(initialEpoch);
+  await deliver(full);
+  expect(sent.at(-1)?.advice).toBeNull();
+  await act(async () => detectRun!());
+  const previousEpoch = reset.captureEpoch;
+  reset = workerMessages.filter((m): m is Extract<WorkerIn, { type: 'reset' }> => m.type === 'reset').at(-1)!;
+  expect(reset.captureEpoch).toBeGreaterThan(previousEpoch!);
+  await deliver({ ...full, captureEpoch: previousEpoch });
+  expect(sent.at(-1)?.advice).toBeNull();
+  await deliver({
+    ...full,
+    captureEpoch: reset.captureEpoch,
+    accepted: false,
+    pending: true,
+    key: '',
+    reads: [],
+    meta: null,
+  });
+  expect(sent.at(-1)?.advice).toBeNull();
+  await deliver({
+    ...full,
+    captureEpoch: reset.captureEpoch,
+    inventory: null,
+    meta: {
+      ...full.meta!,
+      self: 2,
+      bar: {
+        left: [6, 12, 13, 15].map((heroId) => ({ heroId, score: 1, margin: 1 })),
+        right: [2, 3, 4, 5].map((heroId) => ({ heroId, score: 1, margin: 1 })),
+      },
+    },
+  });
+  expect(sent.at(-1)?.advice?.ranked).toHaveLength(3);
+  expect(sent.at(-1)?.advice?.rerollsRemaining).toBe(1);
+  expect(onNewMatch).not.toHaveBeenCalled();
+  expect(screen.getByRole('heading', { name: 'Owned (1)' })).toBeTruthy();
+  const opponentSelects = [1, 2, 3, 4].map(
+    (i) => screen.getByRole('combobox', { name: `Enemy ${i}` }) as HTMLSelectElement,
+  );
+  expect(opponentSelects.map((s) => Number(s.value))).toEqual([6, 12, 13, 15]);
+  const nextGame = {
+    ...full,
+    captureEpoch: reset.captureEpoch,
+    round: 1,
+    transition: 'initial' as const,
+    inventory: null,
+    meta: { ...full.meta!, round: 1 },
+  };
+  await deliver(nextGame);
+  await deliver(nextGame);
+  expect(onNewMatch).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('heading', { name: 'Owned (0)' })).toBeTruthy();
+});
+
+it('retains the first-round team panel through the real preparation phase while item advice clears independently', async () => {
+  const heroes = readJson('heroes.json') as Hero[],
+    items = readJson('items.json') as Item[],
+    abilities = readJson('abilities.json') as Ability[];
+  const hero = heroes.find((h) => h.id === 1)!;
+  const ids = ['Swift Striker', 'Quicksilver Reload', 'Spirit Shielding'].map(
+    (name) => items.find((i) => i.name === name)!.id,
+  );
+  const track = { stop: vi.fn(), addEventListener: vi.fn(), applyConstraints: () => Promise.resolve() };
+  (navigator as unknown as { mediaDevices: unknown }).mediaDevices = {
+    getDisplayMedia: () => Promise.resolve({ getTracks: () => [track], getVideoTracks: () => [track] }),
+  };
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+  let now = 0;
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  const props = { hero, heroes, items, abilities, onHero: () => {} };
+  const view = render(<BrawlView {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: /start capture/i }));
+  await waitFor(() => expect(listener).toBeTypeOf('function'));
+  const draft: FrameResult = {
+    type: 'result',
+    shop: true,
+    round: 1,
+    choice: 3,
+    accepted: true,
+    transition: 'initial',
+    key: ids.join(','),
+    reads: ids.map((itemId, slot) => ({
+      card: String(slot),
+      itemId,
+      present: true,
+      tier: 1,
+      rare: false,
+      enhanced: false,
+      match: { itemId, x: slot * 200, y: 200, edge: 185, score: 1, margin: 1 },
+    })),
+    inventory: null,
+    ms: 0,
+    teamRoster: { self: 1, left: [1, 2, 3, 4], right: [6, 7, 8, 10] },
+    meta: {
+      self: 1,
+      round: 1,
+      choice: 3,
+      bar: {
+        left: [1, 2, 3, 4].map((heroId) => ({ heroId, score: 1, margin: 1 })),
+        right: [6, 7, 8, 10].map((heroId) => ({ heroId, score: 1, margin: 1 })),
+      },
+      rerollsRemaining: 1,
+    },
+  };
+  const deliver = async (frame: FrameResult) => act(async () => listener!({ data: frame } as MessageEvent<WorkerOut>));
+  await deliver(draft);
+  await deliver({ ...draft, accepted: false });
+  const edge = sent.at(-1)?.teamEdge;
+  expect(edge).toBeTruthy();
+  const countdown: FrameResult = {
+    ...draft,
+    shop: false,
+    accepted: false,
+    meta: null,
+    teamRoster: undefined,
+    reads: [],
+    key: '',
+    round: 0,
+    choice: 0,
+    roundCountdown: true,
+    preparationRound: 1,
+  };
+  now = 100;
+  await deliver(countdown);
+  now = 500;
+  await deliver(countdown);
+  expect(sent.at(-1)).toMatchObject({
+    teamVisible: true,
+    teamEdge: edge,
+    advice: null,
+    reads: [],
+    reroll: false,
+    bestId: null,
+  });
+  now = 11_000;
+  await deliver(countdown);
+  expect(sent.at(-1)?.teamEdge).toEqual(edge);
+  view.rerender(<BrawlView {...props} overlaySettings={{ ...DEFAULT_OVERLAY_SETTINGS, showTeamWinRates: false }} />);
+  await waitFor(() => expect(sent.at(-1)?.teamEdge).toBeNull());
+  view.rerender(<BrawlView {...props} overlaySettings={DEFAULT_OVERLAY_SETTINGS} />);
+  await waitFor(() => expect(sent.at(-1)?.teamEdge).toEqual(edge));
+  // F8 during preparation re-reads fresh cue evidence and keeps the same confirmed roster.
+  await act(async () => detectRun!());
+  now = 11_100;
+  await deliver(countdown);
+  expect(sent.at(-1)?.teamEdge).toEqual(edge);
+  const gameplay = { ...countdown, roundCountdown: false, preparationRound: 0 };
+  now = 11_400;
+  await deliver(gameplay);
+  expect(sent.at(-1)?.teamEdge).toEqual(edge);
+  now = 11_700;
+  await deliver(gameplay);
+  expect(sent.at(-1)?.teamEdge ?? null).toBeNull();
+  now = 12_000;
+  await deliver({ ...countdown, preparationRound: 2 });
+  expect(sent.at(-1)?.teamEdge ?? null).toBeNull();
+  await deliver(countdown);
+  expect(sent.at(-1)?.teamEdge ?? null).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: /stop capture/i }));
+  await waitFor(() => expect(sent.at(-1)?.teamEdge ?? null).toBeNull());
 });

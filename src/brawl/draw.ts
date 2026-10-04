@@ -3,6 +3,7 @@ import { rerollButtonRect } from './recognise';
 import type { AbilityPanelData } from './abilities';
 import type { DotState } from './lobbyDot';
 import type { TeamWinRateEdge } from '../local/teamWinRate';
+import { cardSlotSelection, type CardSlotSelection } from '../local/cardSlotSelection';
 
 export interface OverlayAdviceCard {
   itemId: number;
@@ -46,8 +47,10 @@ export interface OverlayState {
   rerollRect?: { x0: number; y0: number; x1: number; y1: number } | null;
   /** The lobby status dot (set by the main process, not the control window): absent while in a match. */
   dot?: DotState | null;
-  /** Complete 4-vs-4 hero WR proxy for the first-round draft only. */
+  /** Complete 4-vs-4 hero WR proxy during the first-round draft and preparation countdown. */
   teamEdge?: TeamWinRateEdge | null;
+  /** Fresh first-round preparation evidence, independent of item advice/ability tip lifetimes. */
+  teamVisible?: boolean;
 }
 
 /** The blank state: nothing to draw. */
@@ -80,6 +83,8 @@ export interface DrawnRect {
   score: number | null;
   /** The plate above the card (frame px); null for the re-roll box or a card without a score. */
   plate: FrameRect | null;
+  /** Capture read index for per-slot hover advice, including duplicated item IDs. */
+  readIndex?: number;
 }
 
 // The large circle an item sits in, relative to the small icon square the recogniser matches: measured on
@@ -158,7 +163,8 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
  *  scaled from capture-frame pixels to the target canvas size. Shared by the preview canvas (BrawlView) and the Electron
  *  overlay window. The best card's plate is green with dark text and TAKE, the others are charcoal with a thin teal border
  *  and muted text. When `reroll` is true no card is best (the engine says re-roll, not take) and the "Use Re-Roll"
- *  button is boxed instead. `scores`/`grades` map itemId to what the advice shows. Returns every shape drawn, in frame
+ *  button is boxed instead. `scores`/`grades` are the legacy itemId maps; optional `slots` keeps each offered variant's
+ *  score, grade and recommendation distinct. Returns every shape drawn, in frame
  *  px, for callers (the hover tooltip, the e2e harness) that need to know where things landed. */
 export function drawReads(
   ctx: CanvasRenderingContext2D,
@@ -173,14 +179,16 @@ export function drawReads(
   rerollRect: FrameRect | null = null,
   grades: Record<number, string> = {},
   theme: OverlayTheme = readTheme(),
+  slots?: CardSlotSelection,
 ): DrawnRect[] {
   const drawn: DrawnRect[] = [];
   const take = theme.take ?? DEFAULT_THEME.take!;
   const takeInk = theme.takeInk ?? DEFAULT_THEME.takeInk!;
   const rerollColor = theme.reroll ?? DEFAULT_THEME.reroll!;
-  for (const read of reads) {
+  const bestIndex = reroll ? null : (slots ?? cardSlotSelection(reads, bestId, null)).bestIndex;
+  for (const [readIndex, read] of reads.entries()) {
     if (!read.present) continue;
-    const isBest = !reroll && read.itemId === bestId;
+    const isBest = readIndex === bestIndex && read.itemId === bestId;
     const { cx, cy, r } = itemCircle(read.match);
     const box = { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r };
     if (isBest) {
@@ -190,7 +198,7 @@ export function drawReads(
       ctx.ellipse(cx * scaleX, cy * scaleY, r * scaleX, r * scaleY, 0, 0, Math.PI * 2);
       ctx.stroke();
     }
-    const score = scores[read.itemId];
+    const score = slots ? slots.cards[readIndex]?.score : scores[read.itemId];
     let plate: FrameRect | null = null;
     if (score !== undefined) {
       const font = Math.max(14, Math.round(read.match.edge * 0.2 * scaleY));
@@ -219,7 +227,7 @@ export function drawReads(
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
       ctx.fillStyle = isBest ? take : theme.tealInk;
-      ctx.fillText(grades[read.itemId] ?? '-', x + h / 2, y + h / 2 + 1);
+      ctx.fillText((slots ? slots.cards[readIndex]?.grade : grades[read.itemId]) ?? '-', x + h / 2, y + h / 2 + 1);
       ctx.textAlign = 'start';
       ctx.fillStyle = isBest ? takeInk : theme.muted;
       ctx.fillText(label, x + h + pad, y + h / 2 + 1);
@@ -237,6 +245,7 @@ export function drawReads(
       ...box,
       score: score ?? null,
       plate,
+      readIndex,
     });
   }
   if (reroll) {

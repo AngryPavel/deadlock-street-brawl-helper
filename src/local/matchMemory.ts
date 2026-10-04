@@ -21,7 +21,7 @@ export class MatchMemory {
     this.owned = [];
     this.acquisitions = [];
   }
-  observeRoster(self: number, foes: number[], round: number) {
+  observeRoster(self: number, foes: number[], round: number, identityCorrection = false) {
     const sorted = [...new Set(foes.filter((id) => id > 0))].sort((a, b) => a - b);
     if (!self || sorted.length !== 4) {
       this.hits = 0;
@@ -31,12 +31,23 @@ export class MatchMemory {
     }
     const roster = `${self}:${sorted.join(',')}`;
     const restart = this.lastRound > 1 && round === 1;
+    // A confirmed player/side correction fixes our interpretation of this session, not its purchases.
+    if (identityCorrection && this.roster && !restart) {
+      const changed = roster !== this.roster;
+      this.roster = roster;
+      this.candidate = `${roster}:continue`;
+      this.hits = 2;
+      this.enemies = sorted;
+      this.pendingInventory = [];
+      if (round > 0) this.lastRound = round;
+      return { changed, newMatch: false };
+    }
     const candidate = `${roster}:${restart ? 'restart' : 'continue'}`;
     if (candidate !== this.candidate) this.pendingInventory = [];
     this.hits = candidate === this.candidate ? this.hits + 1 : 1;
     this.candidate = candidate;
     if (this.hits < 2) return { changed: false, newMatch: false };
-    const newMatch = roster !== this.roster || restart;
+    const newMatch = !this.roster || sorted.join(',') !== this.roster.split(':')[1] || restart;
     // Inventory can settle before the first roster does. It already belongs to this session.
     if (newMatch && this.roster) {
       const pendingInventory = this.pendingInventory;

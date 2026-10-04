@@ -4,6 +4,22 @@ import { InventoryConfirmation } from '../inventoryConfirmation';
 import { items, itemByName } from '../../brawl/__tests__/testData';
 
 describe('confirmed match state', () => {
+  it('corrects player identity or side within the same match without erasing purchases', () => {
+    const m = new MatchMemory();
+    m.observeRoster(67, [2, 3, 4, 5], 4);
+    m.observeRoster(67, [2, 3, 4, 5], 4);
+    const bought = itemByName('Extra Stamina').id;
+    m.observeInventory([bought], items, 10);
+    m.observeRoster(76, [2, 3, 4, 5], 4);
+    expect(m.observeRoster(76, [2, 3, 4, 5], 4).newMatch).toBe(false);
+    expect(m.observeRoster(76, [6, 7, 8, 9], 4, true).newMatch).toBe(false);
+    expect(m.enemies).toEqual([6, 7, 8, 9]);
+    expect(m.owned).toEqual([bought]);
+    expect(m.acquisitions).toEqual([{ itemId: bought, observedAt: 10 }]);
+    m.observeRoster(64, [6, 7, 8, 9], 1);
+    expect(m.observeRoster(64, [6, 7, 8, 9], 1).newMatch).toBe(true);
+    expect(m.owned).toEqual([]);
+  });
   it('requires the second inventory read even when cards and pixels are already settled', () => {
     const latch = new InventoryConfirmation();
     const outputs: (number[] | null)[] = [];

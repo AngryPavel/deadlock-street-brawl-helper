@@ -37,4 +37,41 @@ describe('independent names for late correction', () => {
     Object.values(names).forEach((text, slot) => resolvers[slot]!({ text, confidence: 95 }));
     expect(await pending).toBe(false);
   });
+  it('corroborates each raw slot independently and never lets fuzzy or swapped weak text pass', async () => {
+    const mixed = reads.map((r, slot) => ({
+      ...r,
+      match: { itemId: r.itemId, score: slot === 1 ? 0.6 : 0.98, margin: slot === 1 ? 0.004 : 0.3 },
+    })) as CardRead[];
+    const text = vi.fn().mockResolvedValue({ text: 'Tankbuster', confidence: 93 });
+    const proof = new CardNameConfirmation(text);
+    expect(await proof.confirm(img, mixed, names, 'exact')).toBe(true);
+    expect(text).toHaveBeenCalledTimes(1); // Strong neighbors never suffer an unrelated OCR typo.
+    text.mockResolvedValue({ text: 'Tankbuzter', confidence: 99 });
+    expect(await proof.confirm(img, mixed, names, 'typo')).toBe(false);
+    text.mockResolvedValue({ text: 'Superior Duration', confidence: 99 });
+    expect(await proof.confirm(img, mixed, names, 'swapped')).toBe(false);
+    expect(mixed.map((r) => r.itemId)).toEqual([1, 2, 3]);
+  });
+  it('retries failed evidence after bounded backoff while retaining successful evidence', async () => {
+    let now = 0;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const text = vi.fn().mockResolvedValue({ text: '', confidence: 0 });
+      const proof = new CardNameConfirmation(text);
+      expect(await proof.confirm(img, reads, names, 'same')).toBe(false);
+      expect(await proof.confirm(img, reads, names, 'same')).toBe(false);
+      expect(text).toHaveBeenCalledTimes(3);
+      now = 1001;
+      text
+        .mockResolvedValueOnce({ text: 'Superior Duration', confidence: 96 })
+        .mockResolvedValueOnce({ text: 'Tankbuster', confidence: 89 })
+        .mockResolvedValueOnce({ text: "Enchanter's Emblem", confidence: 94 });
+      expect(await proof.confirm(img, reads, names, 'same')).toBe(true);
+      now = 10_000;
+      expect(await proof.confirm(img, reads, names, 'same')).toBe(true);
+      expect(text).toHaveBeenCalledTimes(6);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });

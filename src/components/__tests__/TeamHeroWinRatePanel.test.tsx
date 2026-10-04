@@ -28,6 +28,12 @@ const styledPanel = (value: TeamWinRateEdge) => (
 );
 
 describe('TeamHeroWinRatePanel', () => {
+  it('shows an explicitly confirmed preparation phase without draft advice, and hides immediately when disabled', () => {
+    const { container, rerender } = render(<TeamHeroWinRatePanel visible draft={false} edge={edge} />);
+    expect(screen.getByRole('complementary', { name: 'Team average hero win rates' })).toBeTruthy();
+    rerender(<TeamHeroWinRatePanel visible={false} draft round={1} edge={edge} />);
+    expect(container.childElementCount).toBe(0);
+  });
   it('shows every hero and individual Street Brawl rate under the correct team, both means, difference and source', () => {
     const { container } = render(<TeamHeroWinRatePanel draft round={1} edge={edge} />);
     expect(container.textContent).toContain('Street Brawl · Hero win rates');

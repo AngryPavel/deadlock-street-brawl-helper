@@ -9,6 +9,7 @@ import { OverlaySettingsPanel } from './local/OverlaySettingsPanel';
 import { DEFAULT_OVERLAY_SETTINGS, isOverlaySettings } from './local/overlaySettings';
 import { usePersisted, isNumber, isString } from './hooks/usePersisted';
 import './local/CompactHeader.css';
+import { useAutoHero } from './hooks/useAutoHero';
 
 const INFERNUS = 1;
 
@@ -47,11 +48,7 @@ export default function App() {
     await window.brawlAPI?.activateDataSnapshot();
   };
   const [changeHero, setChangeHero] = useState(false);
-  const [heroSource, setHeroSource] = useState<'detected' | 'manual'>('manual');
-  const handleHero = (id: number, source: 'detected' | 'manual' = 'manual') => {
-    setHeroId(id);
-    setHeroSource(source);
-  };
+  const { source: heroSource, choose: handleHero, newMatch: onNewMatch } = useAutoHero(setHeroId);
 
   useEffect(() => {
     loadCore()
@@ -177,6 +174,7 @@ export default function App() {
           items={items}
           abilities={abilities}
           onHero={handleHero}
+          onNewMatch={onNewMatch}
           debug={debug}
           overlaySettings={overlaySettings}
         />

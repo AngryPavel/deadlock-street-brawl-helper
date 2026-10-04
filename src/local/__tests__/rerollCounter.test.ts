@@ -12,6 +12,95 @@ const flush = async () => {
 afterAll(terminateOCR);
 
 describe('live reroll availability', () => {
+  it('does not latch an initial false zero over a real positive caption', async () => {
+    const read = vi.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(1).mockResolvedValueOnce(1);
+    const reader = new RerollCounterReader(read, () => 'one'),
+      emit = vi.fn();
+    for (let i = 0; i < 2; i++) {
+      reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+      await flush();
+      expect(reader.value).toBeNull();
+    }
+    reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+    await flush();
+    expect(reader.value).toBe(1);
+    expect(emit.mock.calls.some((call) => call[2])).toBe(false);
+  });
+  it('requires two valid initial zero observations and discards the first on reset', async () => {
+    const reader = new RerollCounterReader(
+        async () => 0,
+        () => 'zero',
+      ),
+      emit = vi.fn();
+    reader.poll(img, context, 0, emit);
+    await flush();
+    expect(reader.value).toBeNull();
+    reader.reset();
+    reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+    await flush();
+    expect(reader.value).toBeNull();
+    reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+    await flush();
+    expect(reader.value).toBe(0);
+    expect(emit.mock.calls.some((call) => call[2])).toBe(false);
+  });
+  it.each([-1, 2])(
+    'retries an unchanged new caption after invalid OCR %s and confirms exactly one spend',
+    async (invalid) => {
+      let label = 'one';
+      const read = vi
+        .fn()
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(invalid)
+        .mockResolvedValueOnce(0)
+        .mockResolvedValueOnce(0);
+      const reader = new RerollCounterReader(read, () => label),
+        emit = vi.fn();
+      for (let i = 0; i < 2; i++) {
+        reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+        await flush();
+      }
+      label = 'zero';
+      for (let i = 0; i < 2; i++) {
+        reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+        await flush();
+        expect(reader.value).toBe(1);
+      }
+      reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+      await flush();
+      expect(reader.value).toBe(0);
+      reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+      await flush();
+      expect(read).toHaveBeenCalledTimes(5);
+      expect(emit.mock.calls.filter((call) => call[2])).toHaveLength(1);
+    },
+  );
+  it('starts fresh OCR after reset and does not let the old completion unlock or overwrite it', async () => {
+    let old!: (value: number) => void;
+    const read = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<number>((resolve) => {
+            old = resolve;
+          }),
+      )
+      .mockResolvedValue(1);
+    const reader = new RerollCounterReader(read, () => 'one'),
+      emit = vi.fn();
+    reader.poll(img, context, 0, emit);
+    reader.reset();
+    reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+    await flush();
+    old(0);
+    await flush();
+    expect(reader.value).toBeNull();
+    reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
+    await flush();
+    expect(reader.value).toBe(1);
+    expect(emit.mock.calls.some((call) => call[2])).toBe(false);
+  });
   it('latches a positive count and reads only a changed label, confirming a decrement before unlocking', async () => {
     let label = 'one';
     const read = vi
@@ -137,6 +226,9 @@ describe('live reroll availability', () => {
     const reader = new RerollCounterReader(read, () => label);
     const emit = vi.fn();
     reader.poll(img, context, 0, emit);
+    await flush();
+    expect(reader.value).toBeNull();
+    reader.poll(img, context, Number.MAX_SAFE_INTEGER, emit);
     await flush();
     expect(reader.value).toBe(0);
     label = 'one';

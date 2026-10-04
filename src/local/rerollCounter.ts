@@ -31,7 +31,7 @@ export class RerollCounterReader {
   private candidateSignature: string | null = null;
   private confirmedCount: number | null = null;
   private ceiling: number | null = null;
-  private signature: string | null = null;
+  private confirmedSignature: string | null = null;
   private read: typeof readRerollsRemaining;
   private fingerprint: typeof rerollLabelSignature;
   constructor(read = readVisibleCounter, fingerprint = rerollLabelSignature) {
@@ -49,7 +49,8 @@ export class RerollCounterReader {
     this.candidateReads = 0;
     this.candidateSignature = null;
     this.confirmedCount = this.ceiling = null;
-    this.signature = null;
+    this.confirmedSignature = null;
+    this.busy = false;
   }
   poll(
     img: RGBImage,
@@ -67,6 +68,7 @@ export class RerollCounterReader {
       if (newRound) this.reset();
       else {
         this.epoch++;
+        this.busy = false;
         this.candidate = -1;
         this.candidateReads = 0;
         this.nextAt = 0;
@@ -78,9 +80,8 @@ export class RerollCounterReader {
     const signature = this.fingerprint(img);
     if (signature === null) return; // Covered label is missing evidence, not a zero and not a reset.
     const confirming = this.candidateReads === 1;
-    if (this.confirmedCount !== null && signature === this.signature && !confirming) return;
+    if (this.confirmedCount !== null && signature === this.confirmedSignature && !confirming) return;
     const epoch = this.epoch;
-    this.signature = signature;
     this.busy = true;
     // The reader copies label pixels synchronously before awaiting OCR.
     void this.read(img)
@@ -91,22 +92,28 @@ export class RerollCounterReader {
         if (!Number.isInteger(value) || value < 0 || value > 10) {
           this.candidate = -1;
           this.candidateReads = 0;
+          this.candidateSignature = null;
           return; // Retain the last confirmed count through an unreadable tooltip.
         }
-        if (this.ceiling !== null && value > this.ceiling) return; // Counts cannot grow within this round.
+        if (this.ceiling !== null && value > this.ceiling) {
+          this.candidate = -1;
+          this.candidateReads = 0;
+          this.candidateSignature = null;
+          return;
+        } // Counts cannot grow within this round.
         this.candidateReads =
           this.candidate === value && this.candidateSignature === signature ? this.candidateReads + 1 : 1;
         this.candidate = value;
         this.candidateSignature = signature;
-        const needsConfirmation = value > 0 || (this.confirmedCount !== null && value !== this.confirmedCount);
-        if (needsConfirmation && this.candidateReads < 2) return;
+        if (this.candidateReads < 2) return;
         const spent = this.confirmedCount !== null && value < this.confirmedCount;
         this.confirmedCount = this.ceiling = value;
+        this.confirmedSignature = signature;
         this.candidateReads = 0;
         emit(value, context, spent);
       })
       .finally(() => {
-        this.busy = false;
+        if (epoch === this.epoch) this.busy = false;
       });
   }
 }

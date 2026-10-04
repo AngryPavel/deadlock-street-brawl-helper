@@ -11,6 +11,10 @@ import { cardAnchors } from '../recognise';
 import { stopItemNameOCR } from '../../local/cardNameOcr';
 
 const state = vi.hoisted(() => ({
+  self: 1,
+  selfSide: 'left' as 'left' | 'right',
+  selfSlot: 0,
+  selfReader: vi.fn(),
   round: 3,
   choice: 1,
   rerolls: 1,
@@ -37,6 +41,10 @@ vi.mock('../recognise', async (original) => {
     decodeIconIndex: actual.decodeIconIndex,
     readRoundChoice: (img: import('../recognise').RGBImage) =>
       state.actualLabels ? actual.readRoundChoice(img) : { round: state.round, choice: state.choice },
+    readPlayerHero: () => {
+      state.selfReader();
+      return state.self ? { heroId: state.self, side: state.selfSide, slot: state.selfSlot } : null;
+    },
     readInventory: () => {
       state.inventoryReader();
       return state.inventory.map((itemId, slot) => ({ itemId, slot }));
@@ -60,7 +68,7 @@ vi.mock('../recognise', async (original) => {
       return {
         round: state.round,
         choice: state.choice,
-        self: 1,
+        self: state.self,
         bar: { left: state.team.map((heroId) => ({ heroId })), right: state.foes.map((heroId) => ({ heroId })) },
         rerollsRemaining: -1,
       };
@@ -110,7 +118,7 @@ const frame = async (elapsed = 250) => {
     .filter((m): m is FrameResult => m.type === 'result')
     .at(-1)!;
 };
-const actualCardPixels = async (name: 'choice2' | 'choice3' | 'round2-choice3') => {
+const actualCardPixels = async (name: 'choice2' | 'choice3' | 'round2-choice3' | 'round4-choice3') => {
   const spec = JSON.parse(readFileSync(`src/brawl/__tests__/assets/settled-${name}.json`, 'utf8')) as {
     width: number;
     height: number;
@@ -130,7 +138,7 @@ const actualCardPixels = async (name: 'choice2' | 'choice3' | 'round2-choice3') 
       ).buffer,
     })),
   );
-  if (name !== 'round2-choice3') namePixels(true);
+  if (name === 'choice2' || name === 'choice3') namePixels(true);
 };
 const namePixels = (visible: boolean, slot?: number) => {
   const bands = cardNameRegions(frameWidth, frameHeight, cardAnchors(frameWidth, frameHeight));
@@ -178,6 +186,10 @@ const closeDraft = async () => {
 beforeEach(async () => {
   vi.resetModules();
   vi.useFakeTimers();
+  state.self = 1;
+  state.selfSide = 'left';
+  state.selfSlot = 0;
+  state.selfReader.mockClear();
   state.round = 3;
   state.choice = 1;
   state.rerolls = 1;
@@ -228,6 +240,82 @@ afterEach(async () => {
 });
 
 describe('worker confirmed state', () => {
+  it('rejects old capture frames and probes arriving after a new forced reset', async () => {
+    await handle({ data: { type: 'reset', captureEpoch: 7 } } as MessageEvent<WorkerIn>);
+    const before = outputs.length;
+    await handle({
+      data: { type: 'frame', captureEpoch: 6, width: frameWidth, height: frameHeight, regions, prefer: [] },
+    } as unknown as MessageEvent<WorkerIn>);
+    await handle({
+      data: {
+        type: 'probe',
+        captureEpoch: 6,
+        frameW: frameWidth,
+        frameH: frameHeight,
+        x: 0,
+        y: 0,
+        width: 1,
+        height: 1,
+        buffer: new ArrayBuffer(4),
+      },
+    } as MessageEvent<WorkerIn>);
+    expect(outputs).toHaveLength(before);
+    expect(state.cardReader).not.toHaveBeenCalled();
+    const fresh = await accept();
+    expect(fresh.captureEpoch).toBe(7);
+  });
+  it('does not adopt the first wrong player read, then confirms fresh Graves without an offer change', async () => {
+    state.self = 67;
+    state.team = [67, 10, 11, 12];
+    const first = await accept();
+    expect(first.meta?.self).toBe(0);
+    state.self = 76;
+    state.selfSlot = 2;
+    state.team = [10, 11, 76, 12];
+    expect((await frame()).meta?.self).toBe(0);
+    const confirmed = await accept();
+    expect(confirmed).toMatchObject({ accepted: true, transition: 'metadata', key: first.key });
+    expect(confirmed.meta?.self).toBe(76);
+    expect(confirmed.meta?.rerollsRemaining).toBe(1);
+    expect(state.selfReader.mock.calls.length).toBeGreaterThan(0);
+  });
+  it('periodically corrects confirmed hero and side on unchanged frames without erasing match acquisitions', async () => {
+    state.round = 4;
+    state.self = 67;
+    state.team = [67, 10, 11, 12];
+    const initial = await accept();
+    await frame();
+    const memory = new MatchMemory();
+    memory.observeRoster(67, state.foes, 4);
+    memory.observeRoster(67, state.foes, 4);
+    memory.observeInventory(state.inventory, items, 10);
+    state.self = 76;
+    state.selfSlot = 2;
+    state.team = [10, 11, 76, 12];
+    expect((await frame(5000)).meta?.self).toBe(67);
+    const corrected = await frame(500);
+    expect(corrected).toMatchObject({ accepted: true, transition: 'hero', key: initial.key });
+    expect(corrected.meta?.self).toBe(76);
+    expect(corrected.meta?.rerollsRemaining).toBe(1);
+    expect(memory.observeRoster(76, state.foes, 4, true).newMatch).toBe(false);
+    state.self = 67;
+    expect((await frame(5000)).meta?.self).toBe(76);
+    state.self = 0;
+    expect((await frame(500)).meta?.self).toBe(76);
+    state.self = 76;
+    state.selfSide = 'right';
+    state.foes = [2, 3, 76, 5];
+    state.team = [67, 10, 11, 12];
+    await frame(500);
+    const sideCorrection = await frame(500);
+    expect(sideCorrection.transition).toBe('hero');
+    expect(memory.observeRoster(76, state.team, 4, true).newMatch).toBe(false);
+    expect(memory.enemies).toEqual([10, 11, 12, 67]);
+    expect(memory.owned).toEqual(state.inventory);
+    expect(memory.acquisitions).toHaveLength(1);
+    state.choice = 2;
+    expect((await accept()).meta?.self).toBe(76); // The next offer must not replay the previous cached Paige.
+  });
   it.each([undefined, 1])('keeps new offers pending when all or one name band is empty (slot=%s)', async (slot) => {
     namePixels(false, slot);
     for (let i = 0; i < 5; i++) expect(await frame()).toMatchObject({ accepted: false, key: '', reads: [] });
@@ -265,6 +353,7 @@ describe('worker confirmed state', () => {
     state.round = 2;
     state.choice = 3;
     state.actualCards = true;
+    state.actualNameOcr = true;
     await actualCardPixels('round2-choice3');
     const originals = regions.map((r) => new Uint8Array(r.buffer).slice());
     for (let value = 0; value <= 240; value += 10) {
@@ -306,7 +395,27 @@ describe('worker confirmed state', () => {
     ]);
     expect(final).toMatchObject({ round: 2, choice: 3, transition: 'reacquire' });
     expect(final.meta?.rerollsRemaining).toBe(1);
-    expect(state.nameReads).toHaveBeenCalledTimes(3);
+    expect(state.nameReads).toHaveBeenCalledTimes(2);
+  }, 20_000);
+  it('corrects actual R4C3 with exact weak-slot text while strong neighbors do not require OCR', async () => {
+    state.round = 4;
+    state.choice = 3;
+    state.cards = ['Titanic Magazine', 'Cloak of Opportunity', 'Titanic Magazine'].map((n) => itemByName(n).id);
+    await actualCardPixels('choice2');
+    await accept();
+    vi.advanceTimersByTime(5000);
+    state.actualCards = true;
+    state.actualNameOcr = true;
+    await actualCardPixels('round4-choice3');
+    expect(await frame()).toMatchObject({ pendingTransition: true, accepted: false, reads: [] });
+    const final = await accept();
+    expect(final.reads.map((r) => r.itemId)).toEqual(
+      ['Vampiric Burst', 'Armor Piercer', 'Spellslinger'].map((n) => itemByName(n).id),
+    );
+    expect(final.reads[0]!.enhanced).toBe(true);
+    expect(final).toMatchObject({ transition: 'reacquire', round: 4, choice: 3 });
+    expect(final.meta?.rerollsRemaining).toBe(1);
+    expect(state.nameReads).toHaveBeenCalledTimes(1);
   }, 20_000);
   it('publishes no initial recommendation while any card is incomplete, then waits for the complete fresh tuple', async () => {
     state.visible = 2;
@@ -317,24 +426,21 @@ describe('worker confirmed state', () => {
     expect(await frame()).toMatchObject({ pending: true, reads: [], key: '', accepted: false });
     expect(await frame()).toMatchObject({ accepted: true, key: '101,102,103' });
   });
-  it('preserves legitimate low-score present matches on initial and authorised choice reads while rejecting late weak correction', async () => {
+  it('leaves weak new candidates pending unless exact text independently validates them', async () => {
     state.cardScores = [0.643, 0.522, 0.818];
+    for (let i = 0; i < 5; i++) expect(await frame()).toMatchObject({ accepted: false, reads: [], key: '' });
+    expect(state.nameReads).toHaveBeenCalledTimes(6);
+    state.cardScores = [];
+    rosterPixels(255);
     expect(await accept()).toMatchObject({ accepted: true, key: '101,102,103' });
     state.choice = 2;
     state.cards = [201, 202, 203];
     cardPixels(255);
+    state.cardScores = [0.643, 0.522, 0.818];
+    for (let i = 0; i < 5; i++) expect((await frame()).accepted).toBe(false);
+    state.cardScores = [];
+    rosterPixels(0);
     expect(await accept()).toMatchObject({ accepted: true, transition: 'choice', key: '201,202,203' });
-    vi.advanceTimersByTime(5000);
-    state.cards = [301, 302, 303];
-    cardPixels(80);
-    for (let i = 0; i < 5; i++)
-      expect(await frame()).toMatchObject({ accepted: false, key: '', pendingTransition: true });
-    expect(state.nameReads).toHaveBeenCalledTimes(3);
-    state.cards = [201, 202, 203];
-    cardPixels(255);
-    const restored = await frame();
-    expect(restored).toMatchObject({ accepted: true, transition: 'metadata', key: '201,202,203' });
-    expect(restored.meta?.rerollsRemaining).toBe(1);
   });
   it('waits for complete stable pixels, then corrects real C2/C3 screen cards after old same-ID label animation beyond the correction window', async () => {
     state.actualCards = true;
@@ -493,6 +599,54 @@ describe('worker confirmed state', () => {
     expect(ended.reads).toEqual([]);
     expect(ended.meta).toBeNull();
     expect(state.cardReader).toHaveBeenCalledTimes(before);
+  });
+  it('reads real first-round preparation regions after picks, keeps full cheap cue polling, and returns to probes on gameplay', async () => {
+    state.round = 1;
+    state.team = [1, 6, 7, 8];
+    await accept();
+    const calls = state.cardReader.mock.calls.length;
+    frameWidth = 3439;
+    frameHeight = 1439;
+    const caption = await sharp('src/local/__tests__/assets/round-countdown.png').ensureAlpha().raw().toBuffer();
+    const round = await sharp('src/local/__tests__/assets/preparation-round1.png').ensureAlpha().raw().toBuffer();
+    regions = [
+      { x: 3000, y: 365, width: 420, height: 70, buffer: Uint8Array.from(caption).buffer },
+      { x: 1745, y: 40, width: 65, height: 55, buffer: Uint8Array.from(round).buffer },
+    ];
+    state.actualLabels = true;
+    const preparation = await frame();
+    expect(preparation).toMatchObject({
+      shop: false,
+      preparationRound: 1,
+      roundCountdown: true,
+      reads: [],
+      key: '',
+      meta: null,
+    });
+    expect(state.cardReader).toHaveBeenCalledTimes(calls);
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
+    expect(await frame(11_000)).toMatchObject({ shop: false, roundCountdown: true });
+    // Same real ROUND 1, but no fixed caption: the first-round preparation has ended.
+    new Uint8Array(regions[0]!.buffer).fill(0);
+    expect(await frame(600)).toMatchObject({ shop: false, preparationRound: 1, roundCountdown: false });
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: false });
+    // A capture restart/F8 reads one full frame and can enter the still-visible first preparation.
+    regions[0]!.buffer = Uint8Array.from(caption).buffer;
+    await handle({ data: { type: 'reset' } } as MessageEvent<WorkerIn>);
+    vi.advanceTimersByTime(0);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
+    expect(await frame()).toMatchObject({ shop: false, preparationRound: 1, roundCountdown: true });
+    state.actualLabels = false;
+    state.round = 2;
+    state.choice = 0;
+    expect(await frame()).toMatchObject({ shop: false, preparationRound: 2, roundCountdown: true });
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
+    expect(await frame()).toMatchObject({ shop: false, preparationRound: 2, roundCountdown: true });
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: false });
   });
   it('publishes inventory on identical frames and preserves it through initial roster confirmation', async () => {
     const memory = new MatchMemory();

@@ -26,17 +26,18 @@ function TeamColumn({ label, heroes, average }: { label: string; heroes: TeamHer
 }
 
 export function TeamHeroWinRatePanel({
+  visible,
   draft,
   round,
   edge,
 }: {
+  visible?: boolean;
   draft?: boolean;
   round?: number;
   edge?: TeamWinRateEdge | null;
 }) {
   if (
-    !draft ||
-    round !== 1 ||
+    !(visible ?? (draft && round === 1)) ||
     !edge ||
     !validRate(edge.ownWinRate) ||
     !validRate(edge.enemyWinRate) ||

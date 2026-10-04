@@ -1,5 +1,6 @@
 import type { DrawnRect, OverlayState } from '../brawl/draw';
 import { availableReroll } from './overlaySettings';
+import { cardSlotSelection } from './cardSlotSelection';
 
 /** Enforce the action at the rendering boundary as well as in capture state. */
 export function overlayDraftAction(state: OverlayState): { bestId: number | null; reroll: boolean } {
@@ -11,7 +12,8 @@ export function overlayDraftAction(state: OverlayState): { bestId: number | null
     state.bestId ??
     (state.reroll ? state.advice?.ranked.find((card) => present.has(card.itemId))?.itemId : null) ??
     null;
-  return { bestId: bestId !== null && present.has(bestId) ? bestId : null, reroll: false };
+  const slot = cardSlotSelection(state.reads, bestId, state.advice).bestIndex;
+  return { bestId: slot !== null ? state.reads[slot]!.itemId : null, reroll: false };
 }
 
 export interface ActionCueLayout {

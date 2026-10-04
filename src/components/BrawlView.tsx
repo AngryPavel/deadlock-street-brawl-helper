@@ -7,6 +7,8 @@ import { MatchMemory } from '../local/matchMemory';
 import { LocalOfferJournal, offerPatch, journalCards, type OfferContext } from '../local/offerJournal';
 import { adviceConfidence } from '../local/adviceConfidence';
 import { teamWinRate, type TeamRoster } from '../local/teamWinRate';
+import { FirstRoundPreparation } from '../local/firstRoundPreparation';
+import { cardSlotSelection } from '../local/cardSlotSelection';
 import type { OfferObservation } from '../local/dropDistribution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
@@ -79,6 +81,7 @@ interface Props {
   items: Item[];
   abilities: Ability[];
   onHero: (id: number, source?: 'detected' | 'manual') => void;
+  onNewMatch?: (heroId: number) => void;
   /** The hidden Debug panel (Ctrl+Shift+D) is open: shows the manual controls and the full advice list. */
   debug?: boolean;
   overlaySettings?: OverlaySettings;
@@ -91,6 +94,7 @@ export function BrawlView({
   items,
   abilities,
   onHero,
+  onNewMatch,
   debug = false,
   overlaySettings = DEFAULT_OVERLAY_SETTINGS,
 }: Props) {
@@ -107,6 +111,7 @@ export function BrawlView({
   const [rerollsLeft, setRerollsLeft] = useState<number | null>(null); // null: unread, conservatively treated as zero
   const [enemies, setEnemies] = useState<number[]>(Array(ENEMY_SLOTS).fill(0));
   const matchMemoryRef = useRef(new MatchMemory());
+  const refreshIdentityRef = useRef<{ epoch: number; until: number } | null>(null);
   const journalRef = useRef<LocalOfferJournal | null>(null);
   if (!journalRef.current) {
     let storage: Storage | undefined;
@@ -204,6 +209,8 @@ export function BrawlView({
   const [tierData, setTierData] = useState<BrawlTierListData | null>(null);
   const teamRosterRef = useRef<TeamRoster | null>(null);
   const teamEdgeRef = useRef<ReturnType<typeof teamWinRate>>(null);
+  const preparationRef = useRef(new FirstRoundPreparation());
+  const [preparationOpen, setPreparationOpen] = useState(false);
   const tierDataRef = useRef(tierData);
   tierDataRef.current = tierData;
   teamEdgeRef.current = teamWinRate(teamRosterRef.current, tierData, heroes);
@@ -320,12 +327,13 @@ export function BrawlView({
     if (!api) return;
     const draft = draftRef.current,
       tipNow = tipRef.current;
+    const teamVisible = preparationRef.current.visible && settingsRef.current.showTeamWinRates !== false;
     let state: OverlayState = BLANK_OVERLAY;
-    if (draft || tipNow) {
+    if (draft || tipNow || teamVisible) {
       const rerollNow = !!rerollRef.current;
       state = {
         reads: draft ? readsRef.current : [],
-        bestId: rerollNow ? null : (rankedRef.current[0]?.item.id ?? null),
+        bestId: draft && !rerollNow ? (rankedRef.current[0]?.item.id ?? null) : null,
         reroll: rerollNow && draft,
         rerollRect: rerollNow && draft ? rerollRectRef.current : null,
         frameW: frameDimsRef.current.w,
@@ -333,10 +341,8 @@ export function BrawlView({
         advice: draft ? overlayAdviceRef.current : null,
         draft,
         panel: tipNow,
-        teamEdge:
-          draft && roundRef.current === 1 && settingsRef.current.showTeamWinRates !== false
-            ? teamEdgeRef.current
-            : null,
+        teamVisible,
+        teamEdge: teamVisible ? teamEdgeRef.current : null,
       };
     }
     const json = JSON.stringify(state);
@@ -391,10 +397,12 @@ export function BrawlView({
     overlaySettings,
     confidence,
     tierData,
+    preparationOpen,
   ]);
 
   /** Ends a Detect now try and logs `detect.manual` with the outcome. */
   function finishDetect(outcome: 'hit' | 'miss' | 'failed') {
+    if (outcome !== 'hit') refreshIdentityRef.current = null;
     const d = detectRef.current;
     if (!d) return;
     clearTimeout(d.timer);
@@ -413,6 +421,13 @@ export function BrawlView({
     // a new press restarts everything, even while an earlier try is still running
     if (detectRef.current) clearTimeout(detectRef.current.timer);
     detectRef.current = null;
+    refreshIdentityRef.current =
+      matchMemoryRef.current.enemies.length === ENEMY_SLOTS
+        ? {
+            epoch: captureGenRef.current + (captureStateRef.current === 'off' ? 1 : 2),
+            until: performance.now() + DETECT_TIMEOUT_MS,
+          }
+        : null;
     cardsRef.current = [];
     prevCardsRef.current = [];
     acceptedKeyRef.current = '';
@@ -420,7 +435,13 @@ export function BrawlView({
     unreadFramesRef.current = 0;
     lastReadSigRef.current = '';
     setCards([]);
-    setRerollsLeft(null);
+    rankedRef.current = [];
+    readsRef.current = [];
+    stableRef.current = emptyStable();
+    rerollRef.current = null;
+    overlayAdviceRef.current = null;
+    pendingOfferRef.current = null;
+    pushOverlay();
     const at = performance.now();
     detectMissesRef.current = 0;
     detectRef.current = {
@@ -439,13 +460,13 @@ export function BrawlView({
     manualStopRef.current = false;
     setManualStop(false);
     setDenied(false);
-    if (captureStateRef.current !== 'off') stopCapture();
+    if (captureStateRef.current !== 'off') stopCapture(true);
     void startCapture();
   };
   const runDetectRef = useRef(runDetect);
   runDetectRef.current = runDetect;
 
-  const stopCapture = useCallback(() => {
+  const stopCapture = useCallback((preserveTeam = false) => {
     captureGenRef.current += 1;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
@@ -453,8 +474,13 @@ export function BrawlView({
     // a new worker and icon index; 'stop' frees its OCR engine.
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
     tipStateRef.current = initialTip();
-    teamRosterRef.current = null;
-    teamEdgeRef.current = null;
+    preparationRef.current.reset();
+    setPreparationOpen(false);
+    if (!preserveTeam) {
+      refreshIdentityRef.current = null;
+      teamRosterRef.current = null;
+      teamEdgeRef.current = null;
+    }
     setDraftOpen(false);
     setTip(null);
     setCapture('off');
@@ -507,7 +533,7 @@ export function BrawlView({
       setCapture('starting');
       if (!detectRef.current) setStatus('loading icon index…');
       if (workerRef.current && workerStartedRef.current)
-        workerRef.current.postMessage({ type: 'reset' } satisfies WorkerIn);
+        workerRef.current.postMessage({ type: 'reset', captureEpoch: gen } satisfies WorkerIn);
       else {
         const w = workerRef.current ?? (await makeWorker());
         if (!w || gen !== captureGenRef.current) return;
@@ -516,6 +542,7 @@ export function BrawlView({
           index: workerIndexRef.current!,
           tiers: workerTiers(),
           intervalMs: CAPTURE_MS,
+          captureEpoch: gen,
         } satisfies WorkerIn);
         workerStartedRef.current = true;
       }
@@ -532,7 +559,7 @@ export function BrawlView({
           return;
         }
         streamRef.current = stream;
-        stream.getVideoTracks()[0].addEventListener('ended', stopCapture);
+        stream.getVideoTracks()[0].addEventListener('ended', () => stopCapture());
         const v = videoRef.current!;
         v.srcObject = stream;
         await v.play();
@@ -665,7 +692,7 @@ export function BrawlView({
   // With a real game the stream is only for the draft: once neither the draft screen nor the ability tip is up for a
   // few seconds, stop capturing and tell main.ts to go back to probing.
   useEffect(() => {
-    if (!isElectron || capture !== 'on' || draftOpen || tip || !probeModeRef.current) return;
+    if (!isElectron || capture !== 'on' || draftOpen || tip || preparationOpen || !probeModeRef.current) return;
     const t = setTimeout(() => {
       captureWantedRef.current = false;
       stopCapture();
@@ -673,7 +700,7 @@ export function BrawlView({
       window.brawlAPI!.captureIdle();
     }, CAPTURE_IDLE_MS);
     return () => clearTimeout(t);
-  }, [capture, draftOpen, tip, stopCapture]);
+  }, [capture, draftOpen, tip, preparationOpen, stopCapture]);
 
   useEffect(() => {
     if (!isElectron) return;
@@ -810,6 +837,7 @@ export function BrawlView({
     };
     const sendFrame = (full: boolean) => perf.time(full ? 'copy.draft' : 'copy.probe', () => copyFrame(full));
     const copyFrame = (full: boolean) => {
+      const frameEpoch = captureGenRef.current;
       const src: CanvasImageSource | null = videoRef.current;
       const srcW = videoRef.current?.videoWidth ?? 0;
       const srcH = videoRef.current?.videoHeight ?? 0;
@@ -864,6 +892,7 @@ export function BrawlView({
         w.postMessage(
           {
             type: 'probe',
+            captureEpoch: frameEpoch,
             frameW: srcW,
             frameH: srcH,
             x: r.x,
@@ -911,9 +940,10 @@ export function BrawlView({
         }
       }
       const prefer = [...offeredRef.current, ...ownedRef.current];
-      w.postMessage({ type: 'frame', width: srcW, height: srcH, regions, prefer } satisfies WorkerIn, [
-        ...regions.map((r) => r.buffer),
-      ]);
+      w.postMessage(
+        { type: 'frame', captureEpoch: frameEpoch, width: srcW, height: srcH, regions, prefer } satisfies WorkerIn,
+        [...regions.map((r) => r.buffer)],
+      );
       const pv = previewRef.current;
       // the preview only matters while the control window can be seen: skip its full-frame scale-draw otherwise
       if (pv && !document.hidden) {
@@ -935,11 +965,14 @@ export function BrawlView({
             scoresFromAdvice(overlayAdviceRef.current),
             null,
             gradesFromAdvice(overlayAdviceRef.current),
+            undefined,
+            cardSlotSelection(readsRef.current, bestId, overlayAdviceRef.current, rerollNow),
           );
         }
       }
     };
     const onMessage = (ev: MessageEvent<WorkerOut>) => {
+      if (ev.data.captureEpoch !== undefined && ev.data.captureEpoch !== captureGenRef.current) return;
       if (ev.data.type === 'tick') {
         if (ev.data.full) setFps(true); // the probe saw a draft screen: raise the frame rate before the first full read
         const full = ev.data.full;
@@ -1007,8 +1040,25 @@ export function BrawlView({
       if (r.meta?.self && frameGate.acceptsContext(r)) {
         const memory = matchMemoryRef.current;
         const established = memory.enemies.length === ENEMY_SLOTS;
-        const observed = memory.observeRoster(r.meta.self, enemiesFrom(r.meta.bar, r.meta.self), r.round);
+        const observed = memory.observeRoster(
+          r.meta.self,
+          enemiesFrom(r.meta.bar, r.meta.self),
+          r.round,
+          r.transition === 'hero' ||
+            !!(
+              refreshIdentityRef.current &&
+              refreshIdentityRef.current.epoch === captureGenRef.current &&
+              performance.now() <= refreshIdentityRef.current.until
+            ),
+        );
+        if (new Set(enemiesFrom(r.meta.bar, r.meta.self)).size === ENEMY_SLOTS) refreshIdentityRef.current = null;
+        if (observed.changed && !observed.newMatch) {
+          setEnemies([...memory.enemies]);
+          teamRosterRef.current = null;
+          teamEdgeRef.current = null;
+        }
         if (observed.newMatch) {
+          preparationRef.current.reset();
           teamRosterRef.current = null;
           teamEdgeRef.current = null;
           ownedRef.current = [...memory.owned];
@@ -1019,12 +1069,31 @@ export function BrawlView({
           prevCardsRef.current = [];
           setTook('');
           if (established) {
+            onNewMatch?.(r.meta.self);
             journalRef.current?.startSession();
             lastOfferLabelRef.current = '';
             nextRerollLabelRef.current = '';
           }
           log('brawl-view', 'info', 'match.confirmed', { self: r.meta.self, enemies: memory.enemies });
         }
+      }
+      // Team preparation continues after item advice closes. Only committed context may restart a
+      // known later round; transient stale draft labels must not resurrect the first-round panel.
+      if (!r.shop || frameGate.acceptsContext(r)) {
+        if (r.accepted && r.round === 1 && roundRef.current > 1 && r.transition === 'initial')
+          preparationRef.current.reset();
+        const open = preparationRef.current.observe(
+          {
+            shop: r.shop,
+            round: r.shop ? r.round : (r.preparationRound ?? r.round),
+            countdown: !!r.roundCountdown,
+            confirmedRound: r.shop && r.accepted,
+            sample: r.preparationSample,
+          },
+          performance.now(),
+        );
+        setPreparationOpen(open);
+        pushOverlay();
       }
       if (r.inventory !== null) {
         const before = ownedRef.current;
@@ -1066,8 +1135,6 @@ export function BrawlView({
         rerollRef.current = null;
         overlayAdviceRef.current = null;
         pendingOfferRef.current = null;
-        teamRosterRef.current = null;
-        teamEdgeRef.current = null;
         setCards([]);
         pushOverlay();
       }
@@ -1111,6 +1178,7 @@ export function BrawlView({
         if (
           r.transition !== 'reacquire' &&
           r.transition !== 'metadata' &&
+          r.transition !== 'hero' &&
           patch &&
           meta.self &&
           layout &&
@@ -1156,8 +1224,8 @@ export function BrawlView({
         if (me !== heroId) {
           const score = [...meta.bar.left, ...meta.bar.right].find((m) => m.heroId === me)?.score;
           log('brawl-view', 'info', 'hero.detect', { from: heroId, to: me, score });
-          onHero(me, 'detected');
         }
+        if (meta.self && heroes.some((h) => h.id === meta.self)) onHero(meta.self, 'detected');
       }
       flushJournal();
       if (!r.shop) {
@@ -1180,7 +1248,7 @@ export function BrawlView({
       setFps(r.shop);
       stepTracker(r.shop);
       if (detectRef.current) {
-        if (r.shop) finishDetect('hit');
+        if (r.shop || (preparationRef.current.visible && r.roundCountdown)) finishDetect('hit');
         else if (++detectMissesRef.current < DETECT_MISSES) {
           return;
         } else {
@@ -1202,7 +1270,7 @@ export function BrawlView({
       setStatus((previous) => (!r.shop && previous === NO_DRAFT_STATUS ? previous : names));
     };
     w.addEventListener('message', onMessage);
-    sendFrame(false); // the worker's first tick may have arrived before this listener existed
+    sendFrame(true); // also read preparation when F8 is pressed after the item draft has closed
     return () => {
       disposed = true;
       pointsReader.reset();
@@ -1212,7 +1280,7 @@ export function BrawlView({
       if (vid && frames.supported) vid.cancelVideoFrameCallback(vfcId);
       w.removeEventListener('message', onMessage);
     };
-  }, [capture, byId, heroId, heroes, onHero, hero, items, setRound, setEnemies]);
+  }, [capture, byId, heroId, heroes, onHero, onNewMatch, hero, items, setRound, setEnemies]);
 
   const took = (r: RankedOffer) => {
     const acquired = matchMemoryRef.current.observeInventory([r.item.id], items, Date.now()).owned;
@@ -1538,6 +1606,7 @@ export function BrawlView({
               <button
                 className="btn"
                 onClick={() => {
+                  refreshIdentityRef.current = null;
                   matchMemoryRef.current.reset();
                   journalRef.current?.startSession();
                   pendingOfferRef.current = null;
