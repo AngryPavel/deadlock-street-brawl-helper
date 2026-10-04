@@ -1,0 +1,11 @@
+.overlay-settings-dialog label.overlay-checkbox-setting {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.overlay-settings-dialog .overlay-checkbox-setting input {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}

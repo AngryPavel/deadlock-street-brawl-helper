@@ -1,0 +1,46 @@
+.team-hero-wr {
+  position: fixed;
+  left: 4vw;
+  top: 3vh;
+  width: clamp(245px, 22vw, 390px);
+  box-sizing: border-box;
+  padding: 9px 12px;
+  border: 1px solid color-mix(in srgb, var(--teal, #2ec4b6) 40%, transparent);
+  border-radius: 4px;
+  background: var(--overlay-panel, rgba(16, 19, 20, 0.85));
+  color: var(--text, #ece6da);
+  font-size: clamp(11px, 1.3vh, 15px);
+  line-height: 1.45;
+  pointer-events: none;
+  user-select: none;
+}
+
+.team-hero-wr-title {
+  font-weight: 700;
+}
+
+.team-hero-wr-values {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  white-space: nowrap;
+  margin-top: 3px;
+}
+
+.team-hero-wr-values strong {
+  margin-left: auto;
+}
+
+.team-hero-wr-values [data-direction='positive'] {
+  color: var(--overlay-take, #52e38b);
+}
+
+.team-hero-wr-values [data-direction='negative'] {
+  color: var(--overlay-reroll, #f3c969);
+}
+
+.team-hero-wr-proxy,
+.team-hero-wr-source {
+  color: var(--muted, #a39e92);
+  font-size: 0.85em;
+}

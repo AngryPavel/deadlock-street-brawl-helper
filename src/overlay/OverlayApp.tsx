@@ -12,6 +12,9 @@ import {
 import { ScoreTip } from '../components/ScoreTip';
 import { AbilityPanel } from '../components/AbilityPanel';
 import { OverlayAdvicePanel } from '../local/OverlayAdvicePanel';
+import { OverlayActionCue } from '../local/OverlayActionCue';
+import { TeamHeroWinRatePanel } from '../local/TeamHeroWinRatePanel';
+import { overlayActionCueLayout, overlayDraftAction, type ActionCueLayout } from '../local/overlayCueGeometry';
 import { DOT_TEXT, type DotState } from '../brawl/lobbyDot';
 import { log } from '../log';
 
@@ -32,6 +35,7 @@ export default function OverlayApp() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const stateRef = useRef<OverlayState | null>(null);
   const [panelState, setPanelState] = useState<OverlayState | null>(null);
+  const [actionCue, setActionCue] = useState<ActionCueLayout | null>(null);
   const drawnRef = useRef<DrawnRect[]>([]);
   const hoverRef = useRef<number | null>(null);
   const dotRef = useRef<DotState | null>(null);
@@ -49,6 +53,7 @@ export default function OverlayApp() {
     if (window.brawlAPI?.isE2E) window.__overlayDot = dot;
     if (!overlayHasContent(state) || !state.frameW || !state.frameH) {
       drawnRef.current = [];
+      setActionCue(null);
       if (window.brawlAPI?.isE2E) {
         window.__overlayDrawn = [];
         window.__overlayAdvice = null;
@@ -58,17 +63,18 @@ export default function OverlayApp() {
     const sx = c.width / state.frameW,
       sy = c.height / state.frameH;
     const drawn: DrawnRect[] = [];
+    const action = overlayDraftAction(state);
     if (state.draft)
       drawn.push(
         ...drawReads(
           ctx,
           state.reads,
-          state.bestId,
+          action.bestId,
           sx,
           sy,
           state.frameW,
           state.frameH,
-          state.reroll,
+          action.reroll,
           scoresFromAdvice(state.advice),
           state.rerollRect ?? null,
           gradesFromAdvice(state.advice),
@@ -77,6 +83,7 @@ export default function OverlayApp() {
     // e2e-only: expose exactly what was stroked (frame px) so the harness can verify boxes without
     // re-deriving them from reads (PLAN.md item 3's boxes-<frame> check).
     drawnRef.current = drawn;
+    setActionCue(overlayActionCueLayout(drawn, state.frameW, state.frameH, c.width, c.height));
     if (window.brawlAPI?.isE2E) {
       window.__overlayDrawn = drawn;
       window.__overlayAdvice = state.draft ? state.advice : null; // what the harness reads in place of the old panel
@@ -193,6 +200,8 @@ export default function OverlayApp() {
   return (
     <>
       <canvas ref={canvasRef} style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }} />
+      <OverlayActionCue cue={actionCue} />
+      <TeamHeroWinRatePanel draft={panelState?.draft} round={advice?.round} edge={panelState?.teamEdge} />
       {advice && <OverlayAdvicePanel advice={advice} />}
       {hover && hovered && (
         <ScoreTip

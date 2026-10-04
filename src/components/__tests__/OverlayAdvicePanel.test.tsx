@@ -36,6 +36,28 @@ const advice: OverlayAdvice = {
 };
 
 describe('live overlay advice', () => {
+  it('replaces every row when duplicate slots transition to the next actual three-card offer', () => {
+    const old = advice.ranked[0]!;
+    const duplicate = { ...old, itemId: 7, name: 'Titanic Magazine' };
+    const { container, rerender } = render(
+      <OverlayAdvicePanel advice={{ ...advice, reroll: null, ranked: [duplicate, duplicate, duplicate] }} />,
+    );
+    const next = [
+      { ...old, itemId: 8, name: 'Swift Striker' },
+      { ...old, itemId: 9, name: 'Quicksilver Reload' },
+      { ...old, itemId: 10, name: 'Spirit Shielding' },
+    ];
+    for (const ranked of [next, [duplicate, duplicate, duplicate], [...next].reverse(), next]) {
+      rerender(<OverlayAdvicePanel advice={{ ...advice, reroll: null, ranked }} />);
+      const rows = [...container.querySelectorAll('.overlay-panel-card')];
+      expect(rows).toHaveLength(3);
+      rows.forEach((row, slot) => {
+        expect(row.textContent).toContain(ranked[slot]!.name);
+        expect(row.textContent).toContain(slot === 0 ? 'TAKE' : `#${slot + 1}`);
+      });
+      if (ranked === next) expect(container.textContent).not.toContain('Titanic Magazine');
+    }
+  });
   it('shows a real engine reroll recommendation with a confirmed available count and all item statistics', () => {
     expect(draft.reroll).not.toBeNull();
     const { container } = render(<OverlayAdvicePanel advice={advice} />);

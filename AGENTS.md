@@ -43,8 +43,8 @@ Repo constitution for planner / worker / evaluator agents. Overrides generic sta
   (below) with that screenshot, runs it through the real find/capture/recognise/advise/draw path, and saves
   the overlay's own composited output to `logs/win-demo.png`. Refuses to run if a real "Deadlock" window is
   already open (same guard as `win:e2e`). Verify with `npx tsx scripts/win/check-demo-png.ts logs/win-demo.png`
-  (`frame-visible: true`, `plates-placed: true`, `teal-on-best: true`, `teal-on-non-best: false`; every offered card has a plate with its tier
-  letter and `Score: <n>` above it; the item to take has a teal-filled plate and a 3 px teal circle outline, the others a charcoal plate with a thin teal border).
+  (`frame-visible: true`, `plates-placed: true`, `green-on-best: true`, `green-on-non-best: false`; every offered card has a plate with its tier
+  letter and `Score: <n>` above it; the item to take has a green TAKE plate and a 3 px green circle outline, the others a charcoal plate with a thin teal border).
   It also writes `logs/win-demo.json` (what the overlay drew). Any `public/demo` frame name works, e.g. `win:demo -- draft-r2c3-reroll` -> `logs/win-demo-<name>.png` or by opening the PNG. Nothing is
   visible on the desktop while this runs: it sets `BRAWL_E2E=1` internally (to reach the `__brawlE2E` test
   hook), which keeps the dummy at the bottom of the z-order and the overlay at opacity 0. `logs/win-demo.png`
@@ -67,7 +67,7 @@ re-rolls, enemies, owned, advice list, ability order. Not persisted. `win:e2e`/`
 
 ## Window and overlay look
 
-The control window is frameless with an app-drawn 32 px strip (`TitleBar.tsx`, `-webkit-app-region: drag`; buttons `no-drag`, minimise/close over IPC), no menu bar. Size/position persist to `userData/window-state.json` (`electron/windowBounds.ts` validates; off-screen -> centred on the primary display; skipped under `BRAWL_E2E` and while test mode's temporary bounds are active). The identity (charcoal, teal `#2ec4b6`, warm off-white, <=4 px corners) lives once in `src/index.css` variables; `readTheme()` in `draw.ts` reads them for the canvas. The overlay draws a plate (tier letter + `Score: n`) above each card; hovering a plate shows `ScoreTip` (rows from `breakdownRows`, in `OverlayAdvice.rows`, summing to the score). The overlay stays click-through (`setIgnoreMouseEvents(true, {forward:true})`); hover is hit-tested in the overlay renderer and only while a draft shows. Under DPI scaling like 125 %, `getBounds` after `setBounds` differs by 1-2 px (rounding); the e2e allows that and checks for drift.
+The control window is frameless with an app-drawn 32 px strip (`TitleBar.tsx`, `-webkit-app-region: drag`; buttons `no-drag`, minimise/close over IPC), no menu bar. Size/position persist to `userData/window-state.json` (`electron/windowBounds.ts` validates; off-screen -> centred on the primary display; skipped under `BRAWL_E2E` and while test mode's temporary bounds are active). The identity (charcoal, teal `#2ec4b6`, warm off-white, <=4 px corners) lives once in `src/index.css` variables; `readTheme()` in `draw.ts` reads them for the canvas. The overlay draws a plate (tier letter + `Score: n`) above each card; the best plate also says TAKE in green, or an amber RE-ROLL cue marks the reroll button. CSS glow respects reduced motion; hovering a plate shows `ScoreTip` (rows from `breakdownRows`, in `OverlayAdvice.rows`, summing to the score). The overlay stays click-through (`setIgnoreMouseEvents(true, {forward:true})`); hover is hit-tested in the overlay renderer and only while a draft shows. Under DPI scaling like 125 %, `getBounds` after `setBounds` differs by 1-2 px (rounding); the e2e allows that and checks for drift.
 
 ## Test mode
 

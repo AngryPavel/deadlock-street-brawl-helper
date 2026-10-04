@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { DEFAULT_OVERLAY_SETTINGS, type OverlaySettings } from './overlaySettings';
+import './OverlaySettingsPanel.css';
 
 export function OverlaySettingsPanel({
   settings,
@@ -9,7 +10,7 @@ export function OverlaySettingsPanel({
   onChange: (value: OverlaySettings) => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const change = (value: Partial<OverlaySettings>) => onChange({ ...settings, ...value });
+  const change = (value: Partial<OverlaySettings>) => onChange({ ...DEFAULT_OVERLAY_SETTINGS, ...settings, ...value });
   return (
     <div className="overlay-settings">
       <button className="btn" onClick={() => dialog.current?.showModal()}>
@@ -17,6 +18,18 @@ export function OverlaySettingsPanel({
       </button>
       <dialog ref={dialog} className="data-update-dialog overlay-settings-dialog">
         <h2>Overlay settings</h2>
+        <label className="overlay-checkbox-setting">
+          <input
+            type="checkbox"
+            checked={settings.showTeamWinRates !== false}
+            onChange={(e) => change({ showTeamWinRates: e.target.checked })}
+            aria-describedby="team-win-rates-setting-description"
+          />
+          <span>Show team hero win rates</span>
+        </label>
+        <p id="team-win-rates-setting-description" className="muted">
+          Shown during the first draft of round 1 when both teams have been confirmed.
+        </p>
         <label>
           Item advice
           <select

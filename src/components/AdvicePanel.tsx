@@ -69,7 +69,7 @@ export function AdvicePanel({
       )}
       {ranked.map((r, k) => (
         <button
-          key={r.item.id}
+          key={`slot-${k}`}
           className={`brawl-card ${k === 0 && !reroll ? 'best' : ''}`}
           onClick={() => took(r)}
           title={`score ${r.score.toFixed(2)} · ${

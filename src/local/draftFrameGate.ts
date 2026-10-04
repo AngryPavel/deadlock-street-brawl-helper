@@ -8,6 +8,16 @@ export class DraftFrameGate {
     this.stable = null;
     this.missingSince = null;
   }
+  acceptsContext(frame: FrameResult) {
+    const previous = this.stable;
+    return (
+      !previous ||
+      !!(frame.accepted && frame.transition) ||
+      (frame.key === previous.key &&
+        (frame.choice === 0 || frame.choice === previous.choice) &&
+        (frame.round === 0 || previous.round === 0 || frame.round === previous.round))
+    );
+  }
 
   publish(frame: FrameResult, now: number): boolean {
     const previous = this.stable;
@@ -17,8 +27,9 @@ export class DraftFrameGate {
       ((frame.choice > 0 && frame.choice !== previous.choice) ||
         (frame.round > 0 && previous.round > 0 && frame.round !== previous.round));
     const changedItems = previous && frame.shop && frame.accepted && frame.key && frame.key !== previous.key;
+    if (previous && frame.shop && !this.acceptsContext(frame)) return false;
     if (changedLabels || changedItems) {
-      // A different choice is real evidence, not a momentary unreadable frame: clear old advice now.
+      // The worker committed these labels/cards together after verifying the transition.
       this.invalidate();
     }
     if (frame.shop && frame.key) {

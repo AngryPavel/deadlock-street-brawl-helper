@@ -2,6 +2,7 @@ import type { CardRead } from './recognise';
 import { rerollButtonRect } from './recognise';
 import type { AbilityPanelData } from './abilities';
 import type { DotState } from './lobbyDot';
+import type { TeamWinRateEdge } from '../local/teamWinRate';
 
 export interface OverlayAdviceCard {
   itemId: number;
@@ -45,6 +46,8 @@ export interface OverlayState {
   rerollRect?: { x0: number; y0: number; x1: number; y1: number } | null;
   /** The lobby status dot (set by the main process, not the control window): absent while in a match. */
   dot?: DotState | null;
+  /** Complete 4-vs-4 hero WR proxy for the first-round draft only. */
+  teamEdge?: TeamWinRateEdge | null;
 }
 
 /** The blank state: nothing to draw. */
@@ -108,6 +111,9 @@ export interface OverlayTheme {
   tealInk: string;
   text: string;
   muted: string;
+  take?: string;
+  takeInk?: string;
+  reroll?: string;
 }
 const DEFAULT_THEME: OverlayTheme = {
   panel: 'rgba(16,19,20,0.85)',
@@ -115,6 +121,9 @@ const DEFAULT_THEME: OverlayTheme = {
   tealInk: '#06201d',
   text: '#ece6da',
   muted: '#a39e92',
+  take: '#52e38b',
+  takeInk: '#092416',
+  reroll: '#f3c969',
 };
 function readTheme(): OverlayTheme {
   if (typeof document === 'undefined' || typeof getComputedStyle === 'undefined') return DEFAULT_THEME;
@@ -126,6 +135,9 @@ function readTheme(): OverlayTheme {
     tealInk: v('--teal-ink', DEFAULT_THEME.tealInk),
     text: v('--text', DEFAULT_THEME.text),
     muted: v('--muted', DEFAULT_THEME.muted),
+    take: v('--overlay-take', DEFAULT_THEME.take!),
+    takeInk: v('--overlay-take-ink', DEFAULT_THEME.takeInk!),
+    reroll: v('--overlay-reroll', DEFAULT_THEME.reroll!),
   };
 }
 
@@ -142,9 +154,9 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
   else ctx.rect(x, y, w, h);
 }
 
-/** Draws the plate above every offered card (tier badge + `Score: <n>`) and the 3 px teal outline around the best card,
+/** Draws the plate above every offered card (tier badge + `Score: <n>`) and the 3 px green outline around the best card,
  *  scaled from capture-frame pixels to the target canvas size. Shared by the preview canvas (BrawlView) and the Electron
- *  overlay window. The best card's plate is filled teal with dark text, the others are charcoal with a thin teal border
+ *  overlay window. The best card's plate is green with dark text and TAKE, the others are charcoal with a thin teal border
  *  and muted text. When `reroll` is true no card is best (the engine says re-roll, not take) and the "Use Re-Roll"
  *  button is boxed instead. `scores`/`grades` map itemId to what the advice shows. Returns every shape drawn, in frame
  *  px, for callers (the hover tooltip, the e2e harness) that need to know where things landed. */
@@ -163,6 +175,9 @@ export function drawReads(
   theme: OverlayTheme = readTheme(),
 ): DrawnRect[] {
   const drawn: DrawnRect[] = [];
+  const take = theme.take ?? DEFAULT_THEME.take!;
+  const takeInk = theme.takeInk ?? DEFAULT_THEME.takeInk!;
+  const rerollColor = theme.reroll ?? DEFAULT_THEME.reroll!;
   for (const read of reads) {
     if (!read.present) continue;
     const isBest = !reroll && read.itemId === bestId;
@@ -170,7 +185,7 @@ export function drawReads(
     const box = { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r };
     if (isBest) {
       ctx.lineWidth = 3;
-      ctx.strokeStyle = theme.teal;
+      ctx.strokeStyle = take;
       ctx.beginPath();
       ctx.ellipse(cx * scaleX, cy * scaleY, r * scaleX, r * scaleY, 0, 0, Math.PI * 2);
       ctx.stroke();
@@ -184,10 +199,11 @@ export function drawReads(
       ctx.font = `bold ${font}px sans-serif`;
       const textW = ctx.measureText(label).width;
       const pad = Math.round(font * 0.5);
-      const w = Math.round(h + textW + pad * 2);
+      const takeW = isBest ? ctx.measureText('TAKE').width + pad * 2 : 0;
+      const w = Math.round(h + textW + pad * 2 + takeW);
       const x = Math.round(cx * scaleX - w / 2);
       const y = Math.max(2, Math.round(box.y0 * scaleY - h - Math.max(4, read.match.edge * 0.04 * scaleY)));
-      ctx.fillStyle = isBest ? theme.teal : theme.panel;
+      ctx.fillStyle = isBest ? take : theme.panel;
       roundedRect(ctx, x, y, w, h, 4);
       ctx.fill();
       if (!isBest) {
@@ -197,16 +213,20 @@ export function drawReads(
         ctx.stroke();
       }
       // tier badge: a square at the left end, a darker cell so the letter reads at a glance
-      ctx.fillStyle = isBest ? theme.tealInk : theme.teal;
+      ctx.fillStyle = isBest ? takeInk : theme.teal;
       roundedRect(ctx, x + 2, y + 2, h - 4, h - 4, 3);
       ctx.fill();
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
-      ctx.fillStyle = isBest ? theme.teal : theme.tealInk;
+      ctx.fillStyle = isBest ? take : theme.tealInk;
       ctx.fillText(grades[read.itemId] ?? '-', x + h / 2, y + h / 2 + 1);
       ctx.textAlign = 'start';
-      ctx.fillStyle = isBest ? theme.tealInk : theme.muted;
+      ctx.fillStyle = isBest ? takeInk : theme.muted;
       ctx.fillText(label, x + h + pad, y + h / 2 + 1);
+      if (isBest) {
+        // TAKE lives on the plate, above the item circle and away from the game's name.
+        ctx.fillText('TAKE', x + h + textW + pad * 2, y + h / 2 + 1);
+      }
       ctx.textBaseline = 'alphabetic';
       plate = { x0: x / scaleX, y0: y / scaleY, x1: (x + w) / scaleX, y1: (y + h) / scaleY };
     }
@@ -226,22 +246,22 @@ export function drawReads(
       x1 = rect.x1 * scaleX,
       y1 = rect.y1 * scaleY;
     ctx.lineWidth = 3;
-    ctx.strokeStyle = theme.teal;
+    ctx.strokeStyle = rerollColor;
     roundedRect(ctx, x0, y0, x1 - x0, y1 - y0, 4);
     ctx.stroke();
-    ctx.font = 'bold 14px sans-serif';
-    const w = ctx.measureText('RE-ROLL').width + 16;
-    const ly = Math.max(2, y0 - 28);
-    ctx.fillStyle = theme.panel;
-    roundedRect(ctx, x0, ly, w, 24, 4);
+    const font = Math.max(14, Math.round((frameH / 1440) * scaleY * 20));
+    const labelH = Math.round(font * 1.7);
+    const pad = Math.round(font * 0.5);
+    ctx.font = `bold ${font}px sans-serif`;
+    const w = ctx.measureText('RE-ROLL').width + pad * 2;
+    const ly = Math.max(2, y0 - labelH - 6);
+    ctx.fillStyle = rerollColor;
+    roundedRect(ctx, x0, ly, w, labelH, 4);
     ctx.fill();
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = theme.teal;
-    roundedRect(ctx, x0 + 0.5, ly + 0.5, w - 1, 23, 4);
-    ctx.stroke();
-    ctx.fillStyle = theme.text;
+    ctx.fillStyle = takeInk;
+    ctx.textAlign = 'start';
     ctx.textBaseline = 'middle';
-    ctx.fillText('RE-ROLL', x0 + 8, ly + 13);
+    ctx.fillText('RE-ROLL', x0 + pad, ly + labelH / 2 + 1);
     ctx.textBaseline = 'alphabetic';
     drawn.push({
       kind: 'reroll',

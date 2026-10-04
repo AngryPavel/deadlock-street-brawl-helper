@@ -18,6 +18,9 @@ const THEME: OverlayTheme = {
   tealInk: '#06201d',
   text: '#ece6da',
   muted: '#a39e92',
+  take: '#52e38b',
+  takeInk: '#092416',
+  reroll: '#f3c969',
 };
 
 function stubCtx() {
@@ -61,7 +64,7 @@ describe('drawReads', () => {
   it('puts a plate above each card, centred on it, with the tier letter and "Score: <n>"', () => {
     const ctx = stubCtx();
     const drawn = run(ctx);
-    expect(ctx.texts.map((t) => t.text)).toEqual(['S', 'Score: 3.14', 'B', 'Score: 2.50']);
+    expect(ctx.texts.map((t) => t.text)).toEqual(['S', 'Score: 3.14', 'TAKE', 'B', 'Score: 2.50']);
     const { cx, cy, r } = itemCircle({ x: 10, y: 100, edge: 50 });
     const plate = drawn[0].plate!;
     expect((plate.x0 + plate.x1) / 2).toBeCloseTo(cx, 0);
@@ -69,15 +72,16 @@ describe('drawReads', () => {
     expect(drawn.map((d) => d.score)).toEqual([3.14159, 2.5]);
   });
 
-  it('fills the best plate teal with dark text and outlines the card 3 px; the others get a 1 px border, no outline', () => {
+  it('fills the best plate green with TAKE and dark text; other cards keep a quiet border and their scores', () => {
     const ctx = stubCtx();
     const drawn = run(ctx);
     expect(drawn.map((d) => d.kind)).toEqual(['best', 'card']);
-    expect(ctx.strokes[0]).toEqual({ color: THEME.teal, width: 3 }); // card outline
+    expect(ctx.strokes[0]).toEqual({ color: THEME.take, width: 3 }); // card outline
     expect(ctx.strokes.slice(1)).toEqual([{ color: THEME.teal, width: 1 }]); // the other plate's border only
-    expect(ctx.fills[0]).toBe(THEME.teal);
-    expect(ctx.texts[1].color).toBe(THEME.tealInk);
-    expect(ctx.texts[3].color).toBe(THEME.muted);
+    expect(ctx.fills[0]).toBe(THEME.take);
+    expect(ctx.texts[1].color).toBe(THEME.takeInk);
+    expect(ctx.texts[2]).toEqual({ text: 'TAKE', color: THEME.takeInk });
+    expect(ctx.texts[4].color).toBe(THEME.muted);
   });
 
   it('keeps the score text at least 14 px tall', () => {
@@ -94,6 +98,8 @@ describe('drawReads', () => {
     expect(drawn.filter((d) => d.kind === 'best')).toHaveLength(0);
     expect(ctx.strokes.filter((s) => s.width === 3)).toHaveLength(1); // the re-roll box only
     expect(ctx.texts.filter((t) => t.text === 'RE-ROLL')).toHaveLength(1);
+    expect(ctx.texts.filter((t) => t.text === 'TAKE')).toHaveLength(0);
+    expect(ctx.strokes.find((s) => s.width === 3)?.color).toBe(THEME.reroll);
     const rr = drawn.find((d) => d.kind === 'reroll')!;
     expect(rr.plate).toBeNull();
   });

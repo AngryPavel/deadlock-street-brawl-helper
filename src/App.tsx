@@ -8,6 +8,7 @@ import { DataUpdates } from './components/DataUpdates';
 import { OverlaySettingsPanel } from './local/OverlaySettingsPanel';
 import { DEFAULT_OVERLAY_SETTINGS, isOverlaySettings } from './local/overlaySettings';
 import { usePersisted, isNumber, isString } from './hooks/usePersisted';
+import './local/CompactHeader.css';
 
 const INFERNUS = 1;
 
@@ -106,7 +107,7 @@ export default function App() {
       <TitleBar />
       <header className="app-header">
         {tab === 'advisor' && <img className="hero-portrait" src={img(hero.images.small)} alt="" />}
-        <div>
+        <div className="hero-identity">
           <h1>
             {tab === 'advisor' ? hero.name : 'Street Brawl Tier List'}
             {tab === 'advisor' && heroSource === 'detected' && (
@@ -149,9 +150,11 @@ export default function App() {
             </div>
           )}
         </div>
+        <div className="header-actions" aria-label="App actions">
+          <DataUpdates manifest={manifest} onApply={applyData} />
+          <OverlaySettingsPanel settings={overlaySettings} onChange={setOverlaySettings} />
+        </div>
       </header>
-      <DataUpdates manifest={manifest} onApply={applyData} />
-      <OverlaySettingsPanel settings={overlaySettings} onChange={setOverlaySettings} />
       <nav className="tabs" role="tablist" aria-label="View">
         {TABS.map((t) => (
           <button

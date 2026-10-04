@@ -42,15 +42,28 @@ describe('draft presentation stability', () => {
   });
   it('never retains old advice after a known new choice, round or confirmed reroll', () => {
     const frames = [
-      { ...incomplete, choice: 1, pending: true },
-      { ...incomplete, round: 2 },
-      { ...complete, key: '4,5,6' },
+      { ...complete, choice: 1, accepted: true, transition: 'choice' as const },
+      { ...complete, round: 2, transition: 'round' as const },
+      { ...complete, key: '4,5,6', transition: 'reroll' as const },
     ];
     for (const frame of frames) {
       const gate = new DraftFrameGate();
       gate.publish(complete, 0);
       expect(gate.publish(frame, 100)).toBe(true);
     }
+  });
+  it('rejects false accepted cards and false labels that were not committed by the worker transition lock', () => {
+    const gate = new DraftFrameGate();
+    gate.publish(complete, 0);
+    for (const frame of [
+      { ...complete, key: '99,99,99' },
+      { ...complete, round: 2 },
+      { ...complete, choice: 1 },
+    ]) {
+      expect(gate.acceptsContext(frame)).toBe(false);
+      expect(gate.publish(frame, 1000)).toBe(false);
+    }
+    expect(gate.publish({ ...complete, accepted: false }, 2000)).toBe(true);
   });
   it('unlocks after spending a reroll or a persistent end of the draft', () => {
     const gate = new DraftFrameGate();

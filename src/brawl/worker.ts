@@ -1,8 +1,9 @@
 // Web Worker that runs the Street Brawl screen recogniser off the main thread, so the page and the overlay stay
 // responsive while frames are read. It keeps the small amount of state needed to decide when a screen is "new":
-// cards are accepted once two consecutive frames agree, and the expensive labels / hero bar read runs only then.
+// complete card/label tuples are committed after transition evidence, and expensive hero-bar reads are cached.
 import {
   HERO_BAR,
+  cardAnchors,
   enemiesFrom,
   inventoryRegions,
   decodeIconIndex,
@@ -21,6 +22,8 @@ import { hudLayout } from '../local/hudLayout';
 import { CardNameRecovery, serialFrames } from '../local/cardRecognition';
 import { stopItemNameOCR } from '../local/cardNameOcr';
 import { InventoryConfirmation } from '../local/inventoryConfirmation';
+import { DraftOfferLock } from '../local/draftOfferLock';
+import { TeamRosterConfirmation, type TeamRoster } from '../local/teamWinRate';
 import type { IconIndex } from './types';
 
 export interface FrameRegion {
@@ -61,14 +64,16 @@ export type WorkerOut =
   | { type: 'rerolls'; forKey: string; forRound: number; forChoice: number; rerollsRemaining: number; spent: boolean };
 
 export interface FrameResult {
+  teamRoster?: TeamRoster | null;
+  transition?: 'initial' | 'choice' | 'round' | 'reroll' | 'metadata';
   pending?: boolean;
   type: 'result';
-  shop: boolean; // isShopScreen(img) for this frame -- false means card/inventory recognition was skipped entirely
-  round: number; // this frame's ROUND / CHOICE labels (0: unread; always 0 on a non-draft frame)
+  shop: boolean; // visible draft labels or unchanged known card pixels; false skips card/inventory recognition
+  round: number; // committed ROUND / CHOICE labels once established (0: unread; 0 on a non-draft frame)
   choice: number;
   reads: CardRead[];
   key: string; // item ids of the three cards, '' when fewer than three are visible
-  accepted: boolean; // true on the frame a new stable set of three cards is first accepted
+  accepted: boolean; // true when the transition lock commits a tuple or confirmed metadata recovers
   meta: DraftMeta | null; // stable round / choice / hero bar, retained while the same draft is visible
   inventory: number[] | null; // owned items from the inventory grid, once two consecutive reads agree; null otherwise
   ms: number;
@@ -80,10 +85,19 @@ let tiers: Record<number, number> = {};
 let lastKey = '',
   acceptedKey = '';
 const inventoryConfirmation = new InventoryConfirmation();
+const offerLock = new DraftOfferLock();
+const teamRoster = new TeamRosterConfirmation();
+let offerEpoch = 0;
+let closedSince: number | null = null;
+let committedCardSigs: Uint8Array[] = [];
+let previousInventory: number[] = [];
+let inventoryPick = false;
 let settledMeta: DraftMeta | null = null;
 let settledBarSig: Uint8Array | null = null;
 let nextMetaRetryAt = 0;
 const completeRoster = (meta: DraftMeta | null) => !!meta?.self && new Set(enemiesFrom(meta.bar, meta.self)).size === 4;
+const completeMetadata = (meta: DraftMeta | null) =>
+  completeRoster(meta) && (acceptedRound !== 1 || !!teamRoster.value);
 const rerollCounter = new RerollCounterReader();
 const recovery = new CardNameRecovery();
 let names: Record<string, string> = {};
@@ -94,7 +108,10 @@ function pollRerolls(img: Parameters<RerollCounterReader['poll']>[0]) {
     performance.now(),
     (rerollsRemaining, ctx, spent) => {
       if (spent) {
-        acceptedKey = lastKey = '';
+        offerEpoch++;
+        offerLock.armReroll();
+        lastKey = '';
+        pendingReads = [];
         settledSig = pendingSig = null;
       }
       post({ type: 'rerolls', forKey: ctx.key, forRound: ctx.round, forChoice: ctx.choice, rerollsRemaining, spent });
@@ -143,6 +160,27 @@ const inventorySignature = (img: ReturnType<typeof pasteRegions>, regions: Retur
   return `${img.width}:${img.height}:${hash >>> 0}`;
 };
 // Reused across frames (same regions every time, so nothing stale survives); reallocated when the frame size changes.
+const cardSignatures = (img: ReturnType<typeof pasteRegions>) =>
+  cardAnchors(img.width, img.height).map((a) => {
+    const samples: number[] = [];
+    for (let y = -0.35; y <= 0.35; y += 0.1)
+      for (let x = -0.35; x <= 0.35; x += 0.1) {
+        const i = (Math.round(a.cy + y * a.icon) * img.width + Math.round(a.cx + x * a.icon)) * 4;
+        samples.push(img.data[i]!, img.data[i + 1]!, img.data[i + 2]!);
+      }
+    return Uint8Array.from(samples);
+  });
+const hasCardTexture = (sig: Uint8Array) => {
+  let sum = 0,
+    squares = 0;
+  for (let i = 0; i < sig.length; i += 3) {
+    const lum = 0.299 * sig[i]! + 0.587 * sig[i + 1]! + 0.114 * sig[i + 2]!;
+    sum += lum;
+    squares += lum * lum;
+  }
+  const n = sig.length / 3;
+  return Math.sqrt(Math.max(0, squares / n - (sum / n) ** 2)) > 15;
+};
 let frameBuf = new Uint8ClampedArray(0);
 const pasteRegions = (width: number, height: number, regions: FrameRegion[]) => {
   if (frameBuf.length !== width * height * 4) frameBuf = new Uint8ClampedArray(width * height * 4);
@@ -167,6 +205,13 @@ let previousRound = 0;
 
 const forgetDraft = () => {
   lastKey = acceptedKey = '';
+  offerEpoch++;
+  offerLock.reset();
+  teamRoster.reset();
+  committedCardSigs = [];
+  closedSince = null;
+  previousInventory = [];
+  inventoryPick = false;
   inventoryConfirmation.reset();
   settledMeta = null;
   settledBarSig = null;
@@ -272,6 +317,10 @@ self.addEventListener(
           tick(0, true); // a draft screen: ask for the whole frame right away
           return;
         }
+        if (acceptedKey) {
+          tick(0, true);
+          return;
+        }
         post(nonShopResult(t0));
         // A single non-draft frame between two draft frames is a blink: check again soon before going slow.
         tick(wasShop ? intervalMs : IDLE_INTERVAL_MS, false);
@@ -284,22 +333,52 @@ self.addEventListener(
       // into the next shop) -- isShopScreen is one small glyph read instead of three full icon searches.
       const labels = readRoundChoice(img);
       if (labels.choice === 0) {
+        const cardsRemain =
+          acceptedKey &&
+          cardSignatures(img).some(
+            (sig, slot) =>
+              !!committedCardSigs[slot] &&
+              hasCardTexture(committedCardSigs[slot]!) &&
+              sameSig(committedCardSigs[slot]!, sig),
+          );
+        if (cardsRemain) {
+          closedSince = null;
+          pollRerolls(img);
+          post({
+            type: 'result',
+            shop: true,
+            round: acceptedRound,
+            choice: acceptedChoice,
+            pending: offerLock.awaitingReroll || undefined,
+            reads: offerLock.awaitingReroll ? [] : settledReads,
+            key: offerLock.awaitingReroll ? '' : acceptedKey,
+            accepted: false,
+            meta: settledMeta,
+            inventory: null,
+            ms: performance.now() - t0,
+            stages,
+          });
+          tick(SETTLED_INTERVAL_MS, true);
+          return;
+        }
         post(nonShopResult(t0));
-        tick(wasShop ? intervalMs : IDLE_INTERVAL_MS, false);
+        tick(acceptedKey ? SETTLED_INTERVAL_MS : wasShop ? intervalMs : IDLE_INTERVAL_MS, !!acceptedKey);
         wasShop = false;
         return;
       }
+      closedSince = null;
       wasShop = true;
       const inventoryRects = inventoryRegions(img.width, img.height);
       const sig = frameSig(msg.regions, inventoryRects);
       const bsig = barSig(img);
       const rosterChanged = !!matchBar && !sameBar(matchBar.sig, bsig);
       if (rosterChanged) knownHero = null;
-      const matchBoundary =
-        (!!previousBarSig && !sameBar(previousBarSig, bsig)) || (previousRound > 1 && labels.round === 1);
-      if (matchBoundary) inventoryConfirmation.reset();
+      const matchBoundary = !!previousBarSig && !sameBar(previousBarSig, bsig);
+      if (matchBoundary) {
+        inventoryConfirmation.reset();
+        teamRoster.reset();
+      }
       previousBarSig = bsig;
-      if (labels.round > 0) previousRound = labels.round;
       const inventorySig = `${inventorySignature(img, inventoryRects)}:${[...new Set(msg.prefer)].sort((a, b) => a - b).join(',')}`;
       // Give the roster read one frame to catch up before publishing inventory from another match.
       let inventory =
@@ -309,17 +388,28 @@ self.addEventListener(
               inventorySig,
             )
           : null;
+      if (inventory) {
+        inventoryPick ||= inventory.some(
+          (id) => !previousInventory.includes(id) && settledReads.some((r) => r.itemId === id),
+        );
+        previousInventory = inventory;
+      }
       if (
         acceptedKey &&
         acceptedKey === lastKey &&
         labels.choice === acceptedChoice &&
         (labels.round === 0 || labels.round === acceptedRound) &&
         (!rosterChanged || (!!settledBarSig && sameBar(settledBarSig, bsig))) &&
-        sameSig(settledSig, sig)
+        sameSig(settledSig, sig) &&
+        !offerLock.awaitingReroll
       ) {
+        offerLock.observe({ key: acceptedKey, round: acceptedRound, choice: acceptedChoice }, performance.now());
         let recoveredMeta = false;
-        if (!completeRoster(settledMeta) && performance.now() >= nextMetaRetryAt) {
-          settledMeta = stage('meta', () => readDraftMeta(img, idx, undefined, true));
+        if (!completeMetadata(settledMeta) && performance.now() >= nextMetaRetryAt) {
+          settledMeta = stage('meta', () => readDraftMeta(img, idx, undefined, acceptedRound !== 1));
+          if (acceptedRound === 1) teamRoster.observe(settledMeta);
+          settledMeta.round = acceptedRound;
+          settledMeta.choice = acceptedChoice;
           nextMetaRetryAt = performance.now() + 500;
           if (completeRoster(settledMeta)) {
             matchBar = { bar: settledMeta.bar, self: settledMeta.self, sig: bsig };
@@ -331,15 +421,19 @@ self.addEventListener(
           }
         }
         pollRerolls(img);
+        if (settledMeta) settledMeta.rerollsRemaining = rerollCounter.value ?? -1;
         post({
           type: 'result',
           shop: true,
-          round: labels.round,
-          choice: labels.choice,
-          reads: settledReads,
-          key: acceptedKey,
-          accepted: recoveredMeta,
+          round: acceptedRound,
+          choice: acceptedChoice,
+          pending: offerLock.awaitingReroll || undefined,
+          reads: offerLock.awaitingReroll ? [] : settledReads,
+          key: offerLock.awaitingReroll ? '' : acceptedKey,
+          accepted: recoveredMeta && !offerLock.awaitingReroll,
+          transition: recoveredMeta ? 'metadata' : undefined,
           meta: settledMeta,
+          teamRoster: teamRoster.value,
           inventory,
           ms: performance.now() - t0,
           stages,
@@ -357,55 +451,83 @@ self.addEventListener(
       const confirmed = lastKey !== '' && pendingChoice === labels.choice && sameSig(pendingSig, sig);
       let reads = confirmed ? pendingReads : stage('cards', () => readDraftScreen(img, idx, (id) => tiers[id] ?? 0));
       const readGeneration = recovery.generation;
+      const epoch = offerEpoch;
       if (reads.some((r) => !r.present)) reads = await recovery.recover(img, reads, names, tiers);
-      if (readGeneration !== recovery.generation) return;
+      if (readGeneration !== recovery.generation || epoch !== offerEpoch) return;
       const seen = reads.filter((r) => r.present).length;
-      const key = seen === 3 ? reads.map((r) => `${r.itemId}${r.enhanced ? '+' : ''}`).join(',') : '';
+      const key =
+        seen === 3 ? reads.map((r) => `${r.itemId}${r.enhanced ? '+' : ''}${r.rare ? 'r' : ''}`).join(',') : '';
       let accepted = false,
         meta: DraftMeta | null = null;
-      if (key && key === lastKey) {
+      const committedBefore = offerLock.current;
+      const wasReroll = offerLock.awaitingReroll;
+      const commit = offerLock.observe(
+        { key, round: labels.round, choice: labels.choice },
+        performance.now(),
+        inventoryPick,
+      );
+      const transition: FrameResult['transition'] = !commit
+        ? undefined
+        : !committedBefore
+          ? 'initial'
+          : wasReroll
+            ? 'reroll'
+            : committedBefore.round !== offerLock.current!.round
+              ? 'round'
+              : 'choice';
+      if (commit) {
         // A new card set, or the ROUND / CHOICE label changed under the same cards (a stale label must not stand):
         // (re)accept, which re-reads the hero bar and labels once the screen has settled.
-        const labelsChanged =
-          key === acceptedKey &&
-          (labels.choice !== acceptedChoice || (labels.round > 0 && labels.round !== acceptedRound));
-        if (key !== acceptedKey || labelsChanged || rosterChanged) {
-          acceptedKey = key;
-          if (labels.round > 0) acceptedRound = labels.round;
-          else if (labels.choice === 1 && acceptedChoice > 1) acceptedRound = Math.min(5, acceptedRound + 1);
-          acceptedChoice = labels.choice;
-          accepted = true;
-          if (!knownHero && matchBar && sameBar(matchBar.sig, bsig)) knownHero = matchBar;
-          meta = stage('meta', () => readDraftMeta(img, idx, knownHero ?? undefined, true));
-          if (completeRoster(meta)) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
-          // the hero bar is constant while the draft screen stays up; keep it until the screen closes (nonShopResult)
-          knownHero = completeRoster(meta) ? { bar: meta.bar, self: meta.self } : null;
-          settledMeta = meta;
-          settledBarSig = bsig;
-          nextMetaRetryAt = 0;
+        acceptedKey = key;
+        acceptedRound = offerLock.current!.round;
+        acceptedChoice = offerLock.current!.choice;
+        if (previousRound > 1 && acceptedRound === 1) {
+          inventoryConfirmation.reset();
+          inventory = null;
         }
-      } else if (!key) {
-        // A card is unreadable: the page may drop its advice (see BrawlView), so the same set must be accepted again
-        // once all three cards read, or the advice would never come back.
-        acceptedKey = '';
+        if (acceptedRound > 0) previousRound = acceptedRound;
+        inventoryPick = false;
+        accepted = true;
+        if (!knownHero && matchBar && sameBar(matchBar.sig, bsig)) knownHero = matchBar;
+        meta = stage('meta', () =>
+          readDraftMeta(
+            img,
+            idx,
+            acceptedRound === 1 && !teamRoster.value ? undefined : (knownHero ?? undefined),
+            acceptedRound !== 1,
+          ),
+        );
+        if (acceptedRound === 1 && !teamRoster.value) teamRoster.observe(meta);
+        meta.round = acceptedRound;
+        meta.choice = acceptedChoice;
+        if (completeRoster(meta)) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
+        // the hero bar is constant while the draft screen stays up; keep it until the screen closes (nonShopResult)
+        knownHero = completeRoster(meta) ? { bar: meta.bar, self: meta.self } : null;
+        settledMeta = meta;
+        settledBarSig = bsig;
+        nextMetaRetryAt = 0;
+        committedCardSigs = cardSignatures(img);
+        settledSig = sig;
+        settledReads = reads;
       }
       lastKey = key;
       pendingSig = key ? sig : null;
       pendingReads = reads;
       pendingChoice = labels.choice;
-      settledSig = key !== '' && key === acceptedKey ? sig : null;
-      settledReads = reads;
-      if (key && key === acceptedKey) pollRerolls(img);
+      if (acceptedKey) pollRerolls(img);
       if (meta) meta.rerollsRemaining = rerollCounter.value ?? -1;
       post({
         type: 'result',
         shop: true,
-        round: labels.round,
-        choice: labels.choice,
-        reads,
-        key,
-        accepted,
-        meta,
+        pending: offerLock.awaitingReroll || undefined,
+        round: acceptedKey ? acceptedRound : labels.round,
+        choice: acceptedKey ? acceptedChoice : labels.choice,
+        reads: offerLock.awaitingReroll ? [] : acceptedKey ? settledReads : reads,
+        key: offerLock.awaitingReroll ? '' : acceptedKey || key,
+        accepted: accepted && !offerLock.awaitingReroll,
+        transition,
+        meta: accepted ? meta : settledMeta,
+        teamRoster: teamRoster.value,
         inventory,
         ms: performance.now() - t0,
         stages,
@@ -416,14 +538,22 @@ self.addEventListener(
 );
 
 const nonShopResult = (t0: number): FrameResult => {
-  lastKey = acceptedKey = '';
-  inventoryConfirmation.reset();
-  settledMeta = null;
-  settledBarSig = null;
-  nextMetaRetryAt = 0;
-  settledSig = pendingSig = null;
-  knownHero = null;
-  acceptedRound = acceptedChoice = 0;
+  closedSince ??= t0;
+  if (t0 - closedSince >= 250) {
+    if (acceptedKey) offerEpoch++;
+    lastKey = acceptedKey = '';
+    offerLock.reset();
+    teamRoster.reset();
+    committedCardSigs = [];
+    inventoryConfirmation.reset();
+    settledMeta = null;
+    settledBarSig = null;
+    nextMetaRetryAt = 0;
+    settledSig = pendingSig = null;
+    knownHero = null;
+    acceptedRound = acceptedChoice = 0;
+    pendingReads = [];
+  }
   return {
     type: 'result',
     shop: false,

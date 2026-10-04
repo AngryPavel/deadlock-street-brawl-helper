@@ -246,6 +246,15 @@ async function main() {
     await waitFor(() => control.isMinimized(), 1000, 25);
     e2e.getTray()?.emit('double-click');
     check('tray-double-click-restores', control.isVisible() && !control.isMinimized());
+    await waitFor(
+      () =>
+        js(
+          control,
+          `(() => { const b = document.querySelector('.data-updates > button'); return !!b && !b.disabled; })()`,
+        ),
+      2000,
+      50,
+    );
     const updateDialog = await js(
       control,
       `(() => {
@@ -282,17 +291,18 @@ async function main() {
       `(() => {
       document.querySelector('.overlay-settings button').click();
       const d = document.querySelector('.overlay-settings-dialog');
-      const values = [...d.querySelectorAll('select,input')].map(e=>e.value);
+      const values = [...d.querySelectorAll('select,input:not([type="checkbox"])')].map(e=>e.value);
       const fits = d.scrollWidth <= d.clientWidth && d.getBoundingClientRect().width <= innerWidth;
       const open = d.open;
       d.close();
-      return { open, values, fits };
+      return { open, values, fits, teamWinRates:d.querySelector('input[type="checkbox"]')?.checked === true };
     })()`,
     );
     check(
       'overlay-settings-dialog',
       overlaySettings.open &&
         overlaySettings.fits &&
+        overlaySettings.teamWinRates &&
         JSON.stringify(overlaySettings.values) === JSON.stringify(['detailed', 'points', '15', '60']),
       JSON.stringify(overlaySettings),
     );
@@ -300,7 +310,7 @@ async function main() {
     const hasDebug = () => js(control, '!!document.querySelector("[aria-label=\\"Debug panel\\"]")');
     const slim = await js(
       control,
-      '({ selects: [...document.querySelectorAll("select")].filter(s => !s.closest("dialog")).length, btn: /Start capture|Stop capture/.test(document.body.innerText) })',
+      '({ selects: [...document.querySelectorAll("select")].filter(s => !s.closest("dialog")).length, btn: !!document.querySelector(".brawl-controls .brawl-capture") })',
     );
     check('debug-hidden-at-launch', !(await hasDebug()) && slim.btn && slim.selects <= 1, JSON.stringify(slim));
     const key = `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true }))`;
@@ -351,6 +361,9 @@ async function main() {
         done: document.querySelectorAll('.ap-pill[data-state="done"]').length,
         cards: (window.__overlayAdvice?.ranked ?? []).map((r) => r.name).join(' | '),
         scores: (window.__overlayAdvice?.ranked ?? []).map((r) => r.score.toFixed(2)),
+        takeCues: document.querySelectorAll('.overlay-action-cue[data-action="take"]').length,
+        rerollCues: document.querySelectorAll('.overlay-action-cue[data-action="reroll"]').length,
+        teamWR: !!document.querySelector('.team-hero-wr'),
       })`,
       );
 
@@ -554,6 +567,29 @@ async function main() {
       }
     }
     check('boxes-choice1', boxesOk, detail.join(' '));
+    const controlLayout = await js(
+      control,
+      `(() => {
+      const header = document.querySelector('.app-header')?.getBoundingClientRect();
+      const buttons = [...document.querySelectorAll('.header-actions .data-updates > button, .header-actions .overlay-settings > button')].map(b => b.getBoundingClientRect());
+      return { references: document.querySelectorAll('.hero-reference').length,
+        headerFits: !!header && header.left >= 0 && header.right <= innerWidth + 1,
+        buttonsFit: buttons.length === 2 && buttons.every(b => b.left >= 0 && b.right <= innerWidth + 1 && b.top >= header.top && b.bottom <= header.bottom + 1) };
+    })()`,
+    );
+    check(
+      'compact-header-and-single-reference',
+      controlLayout.references === 1 && controlLayout.headerFits && controlLayout.buttonsFit,
+      JSON.stringify(controlLayout),
+    );
+    fs.writeFileSync(path.join(ROOT, 'logs', 'win-control-ui.png'), (await control.webContents.capturePage()).toPNG());
+    check(
+      'take-action-cue',
+      cur.takeCues === 1 && cur.rerollCues === 0,
+      `take=${cur.takeCues} reroll=${cur.rerollCues}`,
+    );
+    const teamWR = await waitFor(async () => (await readOverlay()).teamWR, 1_500, 50);
+    check('round1-team-average-wr', !!teamWR, `visible=${!!teamWR}`);
     if (vid && bestPos) {
       await js(overlay, 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
       const cards = cur.drawn.filter((d) => d.plate && (d.kind === 'best' || d.kind === 'card'));
@@ -605,6 +641,12 @@ async function main() {
       const d = (await readOverlay()).drawn.find((r) => r.kind === 'reroll');
       const s = d && vid ? iou(scaleBox(c1.boxes.reroll, vid.w / 2000), d) : 0;
       check('reroll-box', s >= 0.5, `iou=${s.toFixed(2)}`);
+      const cues = await readOverlay();
+      check(
+        'reroll-action-cue',
+        cues.rerollCues === 1 && cues.takeCues === 0,
+        `take=${cues.takeCues} reroll=${cues.rerollCues}`,
+      );
       // next real state replaces the forced one (advice re-sent on change only): switch frame below re-syncs
     }
 
@@ -639,6 +681,22 @@ async function main() {
       })()`,
     );
     await setFrame('gameplay');
+    const itemCloseStarted = Date.now();
+    const itemAdviceGone = await waitFor(
+      async () => {
+        const s = await readOverlay();
+        return !s.panel && s.drawn.length === 0 && !s.ap && s.takeCues === 0 && s.rerollCues === 0 && !s.teamWR
+          ? s
+          : null;
+      },
+      1_000,
+      25,
+    );
+    check(
+      'item-advice-clears-before-ability-tip',
+      !!itemAdviceGone,
+      `${Date.now() - itemCloseStarted}ms panel=${itemAdviceGone?.panel} drawn=${itemAdviceGone?.drawn.length} ability=${itemAdviceGone?.ap}`,
+    );
     const tipSeen = await waitFor(
       async () => {
         const s = await readOverlay();
@@ -818,7 +876,7 @@ function scaleBox(box, scale) {
 }
 
 // Reads the overlay canvas's own pixels (alpha-aware, unlike capturePage on a transparent window) and checks: the best
-// plate is filled teal, the other plates are not, the best card has a teal outline, the others have none.
+// plate is filled green, the other plates are not, the best card has a green outline, the others have none.
 async function checkPixels(overlay, drawn, bestPos) {
   const px = await overlay.webContents.executeJavaScript(
     `(() => {
@@ -835,15 +893,15 @@ async function checkPixels(overlay, drawn, bestPos) {
       }));
     })()`,
   );
-  const isTeal = (p) => p[3] > 200 && p[1] >= 150 && p[2] >= 140 && p[0] <= 90;
+  const isGreen = (p) => p[3] > 200 && p[1] >= 150 && p[1] >= p[2] + 50 && p[0] <= 110;
   const best = px.find((p) => p.card === bestPos);
   const others = px.filter((p) => p.card !== bestPos);
   const pass =
     !!best &&
-    isTeal(best.fill) &&
-    best.edge.some(isTeal) &&
+    isGreen(best.fill) &&
+    best.edge.some(isGreen) &&
     others.length > 0 &&
-    others.every((o) => !isTeal(o.fill) && !o.edge.some(isTeal));
+    others.every((o) => !isGreen(o.fill) && !o.edge.some(isGreen));
   return { pass, detail: `best=${JSON.stringify(best)} others=${JSON.stringify(others)}` };
 }
 

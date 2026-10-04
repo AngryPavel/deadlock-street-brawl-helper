@@ -3,12 +3,15 @@ export interface OverlaySettings {
   abilityTipMode: 'points' | 'fixed';
   tipSeconds: number;
   pointLimitSeconds: number;
+  /** Missing in older saved settings; absence means enabled. */
+  showTeamWinRates?: boolean;
 }
 export const DEFAULT_OVERLAY_SETTINGS: OverlaySettings = {
   detail: 'detailed',
   abilityTipMode: 'points',
   tipSeconds: 15,
   pointLimitSeconds: 60,
+  showTeamWinRates: true,
 };
 export function isOverlaySettings(value: unknown): value is OverlaySettings {
   if (!value || typeof value !== 'object') return false;
@@ -21,7 +24,8 @@ export function isOverlaySettings(value: unknown): value is OverlaySettings {
     v.tipSeconds <= 120 &&
     Number.isInteger(v.pointLimitSeconds) &&
     v.pointLimitSeconds >= 5 &&
-    v.pointLimitSeconds <= 180
+    v.pointLimitSeconds <= 180 &&
+    (v.showTeamWinRates === undefined || typeof v.showTeamWinRates === 'boolean')
   );
 }
 /** Only a confirmed positive on-screen count can authorize spending a reroll. */

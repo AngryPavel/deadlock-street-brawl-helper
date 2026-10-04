@@ -28,6 +28,7 @@ export class RerollCounterReader {
   private nextAt = 0;
   private candidate = -1;
   private candidateReads = 0;
+  private candidateSignature: string | null = null;
   private confirmedCount: number | null = null;
   private ceiling: number | null = null;
   private signature: string | null = null;
@@ -46,6 +47,7 @@ export class RerollCounterReader {
     this.nextAt = 0;
     this.candidate = -1;
     this.candidateReads = 0;
+    this.candidateSignature = null;
     this.confirmedCount = this.ceiling = null;
     this.signature = null;
   }
@@ -62,18 +64,12 @@ export class RerollCounterReader {
     if (!this.context || !sameRerollContext(this.context, context)) {
       const previous = this.context;
       const newRound = !previous || (context.round > 0 && context.round !== previous.round);
-      const rerolled = previous && !newRound && context.choice === previous.choice && context.key !== previous.key;
       if (newRound) this.reset();
       else {
         this.epoch++;
         this.candidate = -1;
         this.candidateReads = 0;
         this.nextAt = 0;
-        // A new set within the same choice means a reroll: block advice until the new count is read.
-        if (rerolled && this.confirmedCount !== 0) {
-          this.confirmedCount = null;
-          this.signature = null;
-        }
       }
       this.context = { ...context };
       emit(this.confirmedCount ?? -1, context, false);
@@ -98,8 +94,10 @@ export class RerollCounterReader {
           return; // Retain the last confirmed count through an unreadable tooltip.
         }
         if (this.ceiling !== null && value > this.ceiling) return; // Counts cannot grow within this round.
-        this.candidateReads = this.candidate === value ? this.candidateReads + 1 : 1;
+        this.candidateReads =
+          this.candidate === value && this.candidateSignature === signature ? this.candidateReads + 1 : 1;
         this.candidate = value;
+        this.candidateSignature = signature;
         const needsConfirmation = value > 0 || (this.confirmedCount !== null && value !== this.confirmedCount);
         if (needsConfirmation && this.candidateReads < 2) return;
         const spent = this.confirmedCount !== null && value < this.confirmedCount;

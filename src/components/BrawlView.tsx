@@ -6,6 +6,7 @@ import { AbilityTipPolicy } from '../local/abilityTipPolicy';
 import { MatchMemory } from '../local/matchMemory';
 import { LocalOfferJournal, offerPatch, journalCards, type OfferContext } from '../local/offerJournal';
 import { adviceConfidence } from '../local/adviceConfidence';
+import { teamWinRate, type TeamRoster } from '../local/teamWinRate';
 import type { OfferObservation } from '../local/dropDistribution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
@@ -52,7 +53,7 @@ import { breakdownRows } from '../brawl/breakdown';
 import { itemTiers, type BrawlTierListData } from '../brawl/tierlist';
 import { AbilityPanel } from './AbilityPanel';
 import { AdvicePanel } from './AdvicePanel';
-import { ItemTile } from './ItemTile';
+import { HeroReference } from '../local/HeroReference';
 import { log } from '../log';
 import { usePersisted, isNumber } from '../hooks/usePersisted';
 
@@ -201,6 +202,11 @@ export function BrawlView({
   const overlayAdviceRef = useRef<OverlayAdvice | null>(null);
   // Tier-list letter per item (S/A/B/C), shown in the badge on each plate.
   const [tierData, setTierData] = useState<BrawlTierListData | null>(null);
+  const teamRosterRef = useRef<TeamRoster | null>(null);
+  const teamEdgeRef = useRef<ReturnType<typeof teamWinRate>>(null);
+  const tierDataRef = useRef(tierData);
+  tierDataRef.current = tierData;
+  teamEdgeRef.current = teamWinRate(teamRosterRef.current, tierData);
   useEffect(() => {
     j<BrawlTierListData>('analytics/brawl/tier-list.json')
       .then(setTierData)
@@ -327,6 +333,10 @@ export function BrawlView({
         advice: draft ? overlayAdviceRef.current : null,
         draft,
         panel: tipNow,
+        teamEdge:
+          draft && roundRef.current === 1 && settingsRef.current.showTeamWinRates !== false
+            ? teamEdgeRef.current
+            : null,
       };
     }
     const json = JSON.stringify(state);
@@ -339,28 +349,29 @@ export function BrawlView({
     tipRef.current = tip;
   }, [draftOpen, tip]);
   useEffect(() => {
-    overlayAdviceRef.current = input
-      ? {
-          hero: hero.name,
-          detail: overlaySettings.detail,
-          rerollsRemaining: rerollsLeft,
-          round,
-          choice,
-          reroll: reroll ? { expectedBest: reroll.expectedBest, currentBest: reroll.currentBest } : null,
-          ranked: ranked.map((r) => ({
-            itemId: r.item.id,
-            name: r.item.name,
-            score: r.score,
-            enhanced: r.enhanced,
-            usage: r.usage,
-            winRate: r.winRate,
-            grade: gradeById.get(r.item.id) ?? '-',
-            rows: breakdownRows(r.parts, r.score, r.known),
-          })),
-          status,
-          confidence,
-        }
-      : null;
+    overlayAdviceRef.current =
+      input && ranked.length === 3
+        ? {
+            hero: hero.name,
+            detail: overlaySettings.detail,
+            rerollsRemaining: rerollsLeft,
+            round,
+            choice,
+            reroll: reroll ? { expectedBest: reroll.expectedBest, currentBest: reroll.currentBest } : null,
+            ranked: ranked.map((r) => ({
+              itemId: r.item.id,
+              name: r.item.name,
+              score: r.score,
+              enhanced: r.enhanced,
+              usage: r.usage,
+              winRate: r.winRate,
+              grade: gradeById.get(r.item.id) ?? '-',
+              rows: breakdownRows(r.parts, r.score, r.known),
+            })),
+            status,
+            confidence,
+          }
+        : null;
     draftRef.current = draftOpen;
     tipRef.current = tip;
     pushOverlay();
@@ -379,6 +390,7 @@ export function BrawlView({
     rerollsLeft,
     overlaySettings,
     confidence,
+    tierData,
   ]);
 
   /** Ends a Detect now try and logs `detect.manual` with the outcome. */
@@ -441,6 +453,8 @@ export function BrawlView({
     // a new worker and icon index; 'stop' frees its OCR engine.
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
     tipStateRef.current = initialTip();
+    teamRosterRef.current = null;
+    teamEdgeRef.current = null;
     setDraftOpen(false);
     setTip(null);
     setCapture('off');
@@ -697,6 +711,10 @@ export function BrawlView({
     void api.getTestMode().then(setTestMode);
     return api.onTestMode(setTestMode);
   }, []);
+  useEffect(() => {
+    // Selecting a test screenshot is an explicit new observation session, including backward fixture labels.
+    if (testMode.on) workerRef.current?.postMessage({ type: 'reset' } satisfies WorkerIn);
+  }, [testMode.on, testMode.frame]);
 
   // Electron: main.ts denies getDisplayMedia (callback({})) instead of falling back to some other window
   // when Deadlock isn't found, so tell the user why capture never starts instead of leaving them guessing.
@@ -966,6 +984,8 @@ export function BrawlView({
             cardsRef.current = [];
             rankedRef.current = [];
             overlayAdviceRef.current = null;
+            readsRef.current = [];
+            stableRef.current = emptyStable();
             setCards([]);
           }
           setRerollsLeft(ev.data.rerollsRemaining >= 0 ? ev.data.rerollsRemaining : null);
@@ -984,11 +1004,13 @@ export function BrawlView({
       }
       const r = ev.data;
       // Game evidence is independent of whether a tooltip currently hides the offered cards.
-      if (r.meta?.self) {
+      if (r.meta?.self && frameGate.acceptsContext(r)) {
         const memory = matchMemoryRef.current;
         const established = memory.enemies.length === ENEMY_SLOTS;
         const observed = memory.observeRoster(r.meta.self, enemiesFrom(r.meta.bar, r.meta.self), r.round);
         if (observed.newMatch) {
+          teamRosterRef.current = null;
+          teamEdgeRef.current = null;
           ownedRef.current = [...memory.owned];
           setOwned([...memory.owned]);
           setEnemies([...memory.enemies]);
@@ -1015,6 +1037,26 @@ export function BrawlView({
         }
       }
       if (!frameGate.publish(r, performance.now())) return;
+      if (r.teamRoster && r.shop) {
+        teamRosterRef.current = r.teamRoster;
+        teamEdgeRef.current = teamWinRate(r.teamRoster, tierDataRef.current);
+      }
+      if (!r.shop) {
+        // The item panel closes after the short screen debounce; the ability tip has its own longer debounce.
+        prevCardsRef.current = cardsRef.current.length ? cardsRef.current : prevCardsRef.current;
+        cardsRef.current = [];
+        readsRef.current = [];
+        stableRef.current = emptyStable();
+        acceptedKeyRef.current = '';
+        rankedRef.current = [];
+        rerollRef.current = null;
+        overlayAdviceRef.current = null;
+        pendingOfferRef.current = null;
+        teamRosterRef.current = null;
+        teamEdgeRef.current = null;
+        setCards([]);
+        pushOverlay();
+      }
       if (perf.enabled) {
         perf.record(r.shop ? 'worker.draft' : 'worker.probe', r.ms);
         for (const [k, v] of Object.entries(r.stages ?? {})) perf.record(`worker.${k}`, v);
@@ -1023,6 +1065,7 @@ export function BrawlView({
       readsRef.current = stableRef.current.reads;
       const seen = r.reads.filter((x) => x.present).length;
       if (r.accepted) {
+        const previousRound = roundRef.current;
         const offers = r.reads.map(toOffer);
         for (const o of offers) offeredRef.current.add(o.itemId);
         prevCardsRef.current = cardsRef.current;
@@ -1080,7 +1123,9 @@ export function BrawlView({
         // no glyph at all (confidently zero); -1 means a glyph is showing and the real OCR read (see
         // ocr.ts's readRerollsRemaining) is still pending -- leave the current value alone until the
         // worker's follow-up 'rerolls' message resolves it, rather than overwrite a real count with "unread".
-        setRerollsLeft(meta.rerollsRemaining >= 0 ? meta.rerollsRemaining : null);
+        setRerollsLeft((previous) =>
+          meta.rerollsRemaining >= 0 ? meta.rerollsRemaining : roundRef.current !== previousRound ? null : previous,
+        );
         // the square-topped portrait is the player's: switch the app's hero to it (the enemies are then the other side)
         if (!meta.self) {
           log('brawl-view', 'debug', 'hero.detect.miss', { bar: meta.bar });
@@ -1124,17 +1169,6 @@ export function BrawlView({
         }
       }
       const heroDetected = r.accepted && r.meta!.self && r.meta!.self === heroId;
-      // A card the recogniser cannot read (usually a hover tooltip covering it) must not leave the previous
-      // screen's advice up: after three such frames of a new card set, drop the old cards.
-      if (r.shop && !r.accepted && seen < 3 && r.key !== acceptedKeyRef.current) {
-        // A readable card outside the shown set means a new screen with a card still hidden: drop at once.
-        const shown = new Set(cardsRef.current.map((c) => c.itemId));
-        const foreign = r.reads.some((x) => x.present && x.itemId && !shown.has(x.itemId));
-        if ((foreign || ++unreadFramesRef.current >= 3) && cardsRef.current.length) {
-          cardsRef.current = [];
-          setCards([]);
-        }
-      } else unreadFramesRef.current = 0;
       const hidden = r.shop && seen < 3 ? ' · move the mouse off the cards' : '';
       const names = !r.shop
         ? 'waiting for the shop'
@@ -1268,6 +1302,14 @@ export function BrawlView({
           </div>
         )}
       </div>
+
+      <HeroReference
+        hero={hero}
+        topItems={topItems}
+        abilityOrder={abilityOrder}
+        abilityTarget={abilityTarget}
+        abilityStepNow={abilityStepNow}
+      />
 
       {debug && (
         <div className="panel brawl-debug" aria-label="Debug panel">
@@ -1452,44 +1494,6 @@ export function BrawlView({
                     enh.
                   </label>
                 </span>
-              ))}
-            </div>
-          </div>
-
-          {abilityOrder && abilityOrder.steps.length > 0 && (
-            <div className="panel">
-              <h2>Ability order</h2>
-              {abilityOrder.support ? (
-                <div className="muted">
-                  seen in {abilityOrder.support.matches} brawls, wins {(abilityOrder.support.winRate * 100).toFixed(0)}%
-                </div>
-              ) : (
-                <div className="muted">no Street Brawl ability data for {hero.name} yet; fallback order shown</div>
-              )}
-              {abilityTarget && <AbilityPanel panel={abilityTarget} className="ap-control" />}
-              <ol className="brawl-ability-order">
-                {abilityOrder.steps.map((s, k) => (
-                  <li key={k} className={k === abilityStepNow ? 'now' : ''}>
-                    {s.ability.name} <small>({s.kind})</small>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-
-          <div className="panel">
-            <h2>{hero.name}'s top items</h2>
-            <div className="muted">Best pick in each tier, relative to the other items of that tier.</div>
-            <div className="top-items">
-              {topItems.map(({ tier, items }) => (
-                <div key={tier} className="top-items-tier">
-                  <h3>Tier {tier}</h3>
-                  <div className="tiles">
-                    {items.map((b, k) => (
-                      <ItemTile key={b.item.id} item={b.item} order={k + 1} />
-                    ))}
-                  </div>
-                </div>
               ))}
             </div>
           </div>

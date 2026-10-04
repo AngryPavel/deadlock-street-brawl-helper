@@ -23,7 +23,7 @@ export function OverlayAdvicePanel({ advice }: { advice: OverlayAdvice }) {
       {detailed && (
         <>
           {advice.ranked.map((r, k) => (
-            <div key={r.itemId} className="overlay-panel-card">
+            <div key={`slot-${k}`} className="overlay-panel-card">
               {k === 0 ? (reroll ? 'BEST NOW' : 'TAKE') : `#${k + 1}`} {r.name}
               {r.enhanced ? ' (enh.)' : ''} · {r.score.toFixed(2)} · {(r.usage * 100).toFixed(0)}% picks
               {r.winRate !== null ? ` · ${(r.winRate * 100).toFixed(0)}% wins` : ''}

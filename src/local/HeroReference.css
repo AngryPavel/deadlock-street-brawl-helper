@@ -1,0 +1,55 @@
+/* Local control-window reference; it does not change the game's overlay panel. */
+.hero-reference .top-items {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.hero-reference .top-items-tier {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.hero-reference .top-items-tier h3 {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.hero-reference .top-items-tier .tiles {
+  max-width: none;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.hero-reference .tile .art {
+  display: block;
+  height: 48px;
+  aspect-ratio: auto;
+  overflow: hidden;
+}
+
+.hero-reference .tile .art img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.hero-reference .tile .plate {
+  display: block;
+  min-height: 36px;
+  padding: 5px 4px;
+  color: #211c16;
+  font-size: 11px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.hero-reference .ap-control {
+  --u: min(0.8px, calc((100vw - 72px) / 485));
+}
+
+.hero-reference .brawl-ability-order {
+  overflow-wrap: anywhere;
+}

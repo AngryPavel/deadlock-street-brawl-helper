@@ -1,0 +1,67 @@
+/* Keep both actions beside the selected hero; wrap within the header at narrow widths. */
+.app-header {
+  flex-wrap: wrap;
+}
+
+.app-header .hero-identity {
+  flex: 1 1 100px;
+  min-width: 0;
+}
+
+.app-header h1 {
+  overflow-wrap: anywhere;
+}
+
+.app-header .hero-select {
+  width: 100%;
+  max-width: 200px;
+  min-height: 30px;
+  margin: 4px 0 0;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 0 1 245px;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.header-actions .data-updates,
+.header-actions .overlay-settings {
+  display: contents;
+}
+
+.header-actions .btn {
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.header-actions .data-updates > div {
+  order: 1;
+  flex-basis: 100%;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.header-actions .data-updates.needs-update > div {
+  font-weight: 700;
+}
+
+.header-actions .data-updates small {
+  color: inherit;
+  margin-top: 2px;
+}
+
+@media (max-width: 440px) {
+  .header-actions {
+    flex-basis: 100%;
+    margin-left: 58px;
+  }
+}

@@ -1,0 +1,36 @@
+.overlay-action-cue {
+  --cue-color: var(--overlay-take, #52e38b);
+  position: fixed;
+  box-sizing: border-box;
+  border: 2px solid var(--cue-color);
+  border-radius: 4px;
+  pointer-events: none;
+  user-select: none;
+  box-shadow: 0 0 8px 2px var(--cue-color);
+  animation: overlay-action-glow 1.8s ease-in-out infinite;
+}
+
+.overlay-action-cue[data-action='reroll'] {
+  --cue-color: var(--overlay-reroll, #f3c969);
+  animation-duration: 1.5s;
+}
+
+@keyframes overlay-action-glow {
+  0%,
+  100% {
+    opacity: 0.65;
+    box-shadow: 0 0 5px 1px var(--cue-color);
+  }
+  50% {
+    opacity: 1;
+    box-shadow: 0 0 13px 3px var(--cue-color);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-action-cue {
+    animation: none;
+    opacity: 1;
+    box-shadow: 0 0 6px 1px var(--cue-color);
+  }
+}
