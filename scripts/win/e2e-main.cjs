@@ -217,13 +217,13 @@ async function main() {
     await waitFor(
       async () =>
         captureAttempts >= 1 &&
-        (await js(control, 'document.querySelector(".brawl-status")?.textContent ?? ""')).includes(
+        (await js(control, 'document.querySelector(".brawl-controls [role=status]")?.textContent ?? ""')).includes(
           'Deadlock window not found',
         ),
       4_000,
       100,
     );
-    const status = await js(control, 'document.querySelector(".brawl-status")?.textContent ?? ""');
+    const status = await js(control, 'document.querySelector(".brawl-controls [role=status]")?.textContent ?? ""');
     check(
       'capture-denied-status',
       captureAttempts >= 1 && status.includes('Deadlock window not found'),
@@ -238,6 +238,14 @@ async function main() {
   }
 
   if (wantsCase('testmode')) {
+    const showInterface = e2e.getTrayMenu()?.getMenuItemById('show-interface');
+    control.hide();
+    showInterface?.click();
+    check('tray-show-interface', showInterface?.label === 'Show interface' && control.isVisible());
+    control.minimize();
+    await waitFor(() => control.isMinimized(), 1000, 25);
+    e2e.getTray()?.emit('double-click');
+    check('tray-double-click-restores', control.isVisible() && !control.isMinimized());
     const updateDialog = await js(
       control,
       `(() => {
@@ -273,7 +281,7 @@ async function main() {
     const hasDebug = () => js(control, '!!document.querySelector("[aria-label=\\"Debug panel\\"]")');
     const slim = await js(
       control,
-      '({ selects: document.querySelectorAll("select").length, btn: /Start capture|Stop capture/.test(document.body.innerText) })',
+      '({ selects: [...document.querySelectorAll("select")].filter(s => !s.closest("dialog")).length, btn: /Start capture|Stop capture/.test(document.body.innerText) })',
     );
     check('debug-hidden-at-launch', !(await hasDebug()) && slim.btn && slim.selects <= 1, JSON.stringify(slim));
     const key = `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true }))`;
@@ -328,6 +336,7 @@ async function main() {
       );
 
     // --- blank before any draft: test mode on with the in-round frame -> nothing drawn (before advice) ---
+    e2e.setInitialTestFrame('gameplay');
     const clicked = await js(control, CLICK_TEST_MODE_JS);
     const win = await waitFor(() => e2e.getTestWindow(), 8_000);
     check(
@@ -379,6 +388,7 @@ async function main() {
     };
     // Warm up on the in-round frame (capture start-up is not what the 2 s bound measures); nothing may be
     // drawn.
+    await waitFor(() => js(control, `!!document.querySelector('select[aria-label="Test screenshot"]')`), 2000, 25);
     await setFrame('gameplay');
     await waitFor(
       () => captureAttempts >= 1 && js(control, '!!document.querySelector("video")?.videoWidth'),
@@ -388,7 +398,12 @@ async function main() {
     await sleep(600);
     // --- lobby status dot (non-draft frame), hover line, detect-miss ---
     {
-      const dot = await waitFor(() => js(overlay, 'window.__overlayDot ?? null'), 3_000, 100);
+      e2e.forceCaptureOff();
+      const dot = await waitFor(
+        () => js(overlay, `window.__overlayDot?.state === 'watching' ? window.__overlayDot : null`),
+        3_000,
+        100,
+      );
       const ow = overlay.getBounds();
       const k = ow.height / 1080;
       check(
@@ -424,7 +439,7 @@ async function main() {
           `gone=${!!gone} ignoresMouse=${e2e.overlayIgnoresMouseEvents}`,
         );
       }
-      // Detect now on a non-draft frame: "No draft found" within the limit, capture ends off, nothing drawn.
+      // Detect now on a non-draft frame reports the miss within the limit and keeps watching for the draft.
       const statusText = () =>
         js(control, `document.querySelector('.brawl-controls [role=status]')?.textContent ?? ''`);
       const captureBtn = () => js(control, `document.querySelector('.brawl-capture')?.textContent ?? ''`);
@@ -440,7 +455,7 @@ async function main() {
         'detect-miss',
         !!missed &&
           missMs <= 2_000 &&
-          (await captureBtn()) === 'Start capture' &&
+          (await captureBtn()) === 'Stop capture' &&
           after.drawn.length === 0 &&
           !after.panel,
         `status=${JSON.stringify(await statusText())} ${missMs}ms (limit 2000ms) btn=${await captureBtn()} drawn=${after.drawn.length}`,

@@ -26,6 +26,8 @@ Then:
 2. Run the app. It finds the Deadlock window on its own.
 3. Play a Street Brawl draft. The advice appears over the draft screen.
 
+Double-click the tray icon to bring back the app window, or right-click it and choose **Show interface**.
+
 No game running? Press **Ctrl+Shift+D** in the app window to open the Debug panel and turn on Test mode.
 
 Use **Update data** in the app to download a fresh snapshot. The app checks Steam patch announcements

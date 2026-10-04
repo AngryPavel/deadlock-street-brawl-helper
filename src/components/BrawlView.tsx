@@ -970,7 +970,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
           : heroDetected
             ? `hero: ${hero.name} · ${seen}/3 cards found${hidden}`
             : `${seen}/3 cards found${hidden}`;
-      setStatus(names);
+      setStatus((previous) => (!r.shop && previous === NO_DRAFT_STATUS ? previous : names));
     };
     w.addEventListener('message', onMessage);
     sendFrame(false); // the worker's first tick may have arrived before this listener existed
@@ -1021,7 +1021,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   };
   const statusLine = (() => {
     if (platformWarning) return platformWarning;
-    if (status === NO_DRAFT_STATUS && capture !== 'on') return status;
+    if (status === NO_DRAFT_STATUS) return status;
     if (status === 'Detecting…') return status;
     if (capture === 'starting') return 'Capture starting…';
     if (capture === 'on') {

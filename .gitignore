@@ -12,6 +12,7 @@ dist
 dist-ssr
 electron-dist
 release
+.build-cache/
 *.local
 
 # Editor directories and files

@@ -26,6 +26,7 @@ import {
 import { probeShopScreen } from './shopProbe';
 import { CHANNELS } from './channels';
 import { setupDataUpdates } from './update/integration';
+import { installTrayWindowControls } from './trayControls';
 import { MIN_HEIGHT, MIN_WIDTH, isBounds, validBounds } from './windowBounds';
 import { overlayHasContent } from '../src/brawl/overlayContent';
 import { dotState, initialLobby, lobbyDotVisible, stepLobby, type DotState } from '../src/brawl/lobbyDot';
@@ -69,6 +70,7 @@ const POLL_TICKS_GAME = 2;
 let control: BrowserWindow | null = null;
 let overlay: BrowserWindow | null = null;
 let tray: Tray | null = null;
+let trayMenu: Menu | null = null;
 let lastRect: Rect | null = null;
 // Whether the control window should be capturing the game (see CHANNELS.captureState). With a real game this stays
 // false until `probeShopScreen` sees the draft screen, and goes back to false when the control window says the draft
@@ -225,6 +227,7 @@ function createControlWindow() {
     frame: false, // the page draws its own title strip (src/components/TitleBar.tsx); no Windows title bar or menu
     backgroundColor: WINDOW_BG,
     title: 'Deadlock Street Brawl Helper',
+    icon: path.join(__dirname, '../dist/apple-touch-icon.png'),
     show: !process.env.BRAWL_E2E,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
@@ -800,17 +803,15 @@ function setupTray() {
     ? path.join(process.resourcesPath, 'app.asar', 'dist', 'apple-touch-icon.png')
     : path.join(__dirname, '../public/apple-touch-icon.png');
   const icon = nativeImage.createFromPath(iconPath);
-  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon.resize({ width: 16, height: 16 }));
   tray.setToolTip('Deadlock Street Brawl Helper');
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Toggle overlay', click: toggleOverlay },
-      { label: 'Detect now (F8)', click: () => detectNow('tray') },
-      { label: 'Debug panel', click: toggleDebugPanel },
-      { label: 'Toggle test mode', click: () => (alive(testWindow) ? stopTestMode() : void startTestMode()) },
-      { label: 'Quit', click: () => app.quit() },
-    ]),
-  );
+  trayMenu = installTrayWindowControls(tray, () => control, [
+    { label: 'Toggle overlay', click: toggleOverlay },
+    { label: 'Detect now (F8)', click: () => detectNow('tray') },
+    { label: 'Debug panel', click: toggleDebugPanel },
+    { label: 'Toggle test mode', click: () => (alive(testWindow) ? stopTestMode() : void startTestMode()) },
+    { label: 'Quit', click: () => app.quit() },
+  ]);
 }
 
 function toggleDebugPanel() {
@@ -878,6 +879,11 @@ app.whenReady().then(async () => {
   if (process.env.BRAWL_E2E) {
     (globalThis as Record<string, unknown>).__brawlE2E = {
       getControl: () => control,
+      getTray: () => tray,
+      getTrayMenu: () => trayMenu,
+      setInitialTestFrame: (frame: string) => {
+        if (!alive(testWindow) && testFrames().includes(frame)) testFrame = frame;
+      },
       toggleDebugFromTray: toggleDebugPanel,
       getOverlay: () => overlay,
       get overlayIgnoresMouseEvents() {

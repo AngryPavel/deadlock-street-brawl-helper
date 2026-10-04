@@ -71,6 +71,7 @@
       "main": "electron-dist/main.js"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis",
         "portable"
