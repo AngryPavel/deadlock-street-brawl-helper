@@ -1,4 +1,5 @@
 import type { RGBImage, Region } from '../brawl/recognise';
+import { matchCardName } from './cardNameMatch';
 
 const creamInk = (r: number, g: number, b: number) =>
   Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 85;
@@ -92,30 +93,7 @@ export function itemNameSoftCrop(img: RGBImage, region: Region) {
   return { data, width, height, scale: 4, interpolation: 'nearest' as const };
 }
 
-const normaliseName = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, '');
-const distance = (a: string, b: string) => {
-  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
-  for (let i = 1; i <= a.length; i++) {
-    const next = [i];
-    for (let j = 1; j <= b.length; j++)
-      next[j] = Math.min(next[j - 1]! + 1, row[j]! + 1, row[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
-    row = next;
-  }
-  return row[b.length]!;
-};
-
-/** Resolve only an exact or clearly separated near-match; unread/ambiguous text stays unknown. */
-export function itemIdFromName(text: string, confidence: number, names: Record<string, string>): number {
-  const query = normaliseName(text);
-  if (query.length < 4 || confidence < 45) return 0;
-  const scores = Object.entries(names)
-    .map(([id, name]) => {
-      const key = normaliseName(name);
-      return { id: Number(id), score: 1 - distance(query, key) / Math.max(query.length, key.length) };
-    })
-    .sort((a, b) => b.score - a.score);
-  const best = scores[0];
-  if (!best) return 0;
-  if (best.score === 1) return best.id;
-  return best.score >= 0.88 && best.score - (scores[1]?.score ?? 0) >= 0.1 ? best.id : 0;
+/** Confidence is diagnostic; only complete, distinctive catalogue text resolves an identity. */
+export function itemIdFromName(text: string, _confidence: number, names: Record<string, string>): number {
+  return matchCardName(text, names).itemId;
 }

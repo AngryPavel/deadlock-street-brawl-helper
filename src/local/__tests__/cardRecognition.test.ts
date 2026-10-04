@@ -46,11 +46,22 @@ describe('item-name recovery', () => {
     finish({ text: 'Extra Stamina', confidence: 95 });
     expect(await pending).toEqual(partial);
   });
-  it('accepts punctuation/case and a clear OCR typo, rejects ambiguity and low confidence', () => {
+  it('accepts complete unique names without a confidence floor and rejects incomplete text', () => {
     expect(itemIdFromName("ENCHANTER'S EMBLEM", 85, names)).toBe(itemByName("Enchanter's Emblem").id);
-    expect(itemIdFromName('Monster Rounds', 20, names)).toBe(0);
+    expect(itemIdFromName('Monster Rounds', 20, names)).toBe(itemByName('Monster Rounds').id);
     expect(itemIdFromName('Monster Roundz', 85, names)).toBe(itemByName('Monster Rounds').id);
     expect(itemIdFromName('Extra', 95, names)).toBe(0);
+  });
+  it('does not create missing cards from OCR when the frame or icon core has no visual evidence', async () => {
+    const text = vi.fn().mockResolvedValue({ text: 'Monster Rounds', confidence: 100 });
+    const recovery = new CardNameRecovery(text);
+    const img = { width: 2560, height: 1440, data: new Uint8Array(2560 * 1440 * 4), channels: 4 as const };
+    const reads = readDraftScreen(img, { ...index, ids: [], pixels: [] }, () => 0);
+    expect(await recovery.recover(img, reads, names, tiers)).toEqual(reads);
+    // White name-like pixels still cannot make a uniform empty icon into a card.
+    img.data.set([255, 255, 255, 255], (960 * img.width + 500) * 4);
+    expect(await recovery.recover(img, reads, names, tiers)).toEqual(reads);
+    expect(text).not.toHaveBeenCalled();
   });
   it('recovers all three real ultrawide names when their icons are missing from the index', async () => {
     const { data, info } = await sharp('scripts/win/frames/ultrawide-choice1.png')

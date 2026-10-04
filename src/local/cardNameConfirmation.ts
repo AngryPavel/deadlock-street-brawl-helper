@@ -1,17 +1,15 @@
 import { cardAnchors, readMarkers, type CardRead, type RGBImage } from '../brawl/recognise';
 import { cardNameRegions, itemNameCrop, itemNameSoftCrop } from './cardNames';
 import { readItemName, type ItemNameOcrCrop } from './cardNameOcr';
+import { matchCardName } from './cardNameMatch';
 
 export const strongDirectCard = (read: CardRead) =>
   read.present && read.match?.score >= 0.82 && read.match.margin >= 0.08;
 
-const normalise = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
-/** Late correction requires exact independent text, unlike the ordinary fuzzy missing-icon fallback. */
-export function exactCardNameId(text: string, confidence: number, names: Record<string, string>): number {
-  const query = normalise(text);
-  if (!Number.isFinite(confidence) || confidence < 80 || query.length < 4) return 0;
-  const matches = Object.entries(names).filter(([, name]) => normalise(name) === query);
-  return matches.length === 1 ? Number(matches[0]![0]) : 0;
+/** Confidence is retained for diagnostics and never gates a unique exact catalogue name. */
+export function exactCardNameId(text: string, _confidence: number, names: Record<string, string>): number {
+  const match = matchCardName(text, names);
+  return match.kind === 'exact' ? match.itemId : 0;
 }
 
 export interface CardNameTextEvidence {
@@ -21,10 +19,9 @@ export interface CardNameTextEvidence {
 }
 export interface CardNameSlotOutcome {
   slot: number;
-  status: 'strong' | 'exact' | 'unknown' | 'unavailable';
+  status: 'strong' | 'exact' | 'corrected' | 'unknown' | 'unavailable';
   itemId: number;
-  reason?:
-    'empty-text' | 'low-confidence' | 'non-finite-confidence' | 'ambiguous-name' | 'non-exact-name' | 'service-failed';
+  reason?: 'empty-text' | 'ambiguous-name' | 'non-exact-name' | 'service-failed';
   primary?: CardNameTextEvidence;
   alternate?: CardNameTextEvidence;
 }
@@ -34,16 +31,6 @@ export interface CardNameConfirmationOutcome {
   slots: readonly CardNameSlotOutcome[];
 }
 export type CardNameOutcome = CardNameConfirmationOutcome;
-
-function unknownReason(text: CardNameTextEvidence, names: Record<string, string>): CardNameSlotOutcome['reason'] {
-  if (!Number.isFinite(text.confidence)) return 'non-finite-confidence';
-  if (text.confidence < 80) return 'low-confidence';
-  const query = normalise(text.text);
-  if (query.length < 4) return 'empty-text';
-  return Object.values(names).filter((name) => normalise(name) === query).length > 1
-    ? 'ambiguous-name'
-    : 'non-exact-name';
-}
 
 export class CardNameConfirmation {
   private generation = 0;
@@ -77,7 +64,7 @@ export class CardNameConfirmation {
     return !!resolved && resolved.every((r, slot) => r.itemId === reads[slot]!.itemId);
   }
 
-  /** Exact text can replace a weak present icon ID; strong slots and raw match strength stay unchanged. */
+  /** Unambiguous full names can replace a weak present ID; strong slots and raw strength stay unchanged. */
   async resolve(
     img: RGBImage,
     reads: CardRead[],
@@ -102,14 +89,15 @@ export class CardNameConfirmation {
       (crop, slot) => `${signature(crop)}/${softCrops[slot] ? signature(softCrops[slot]) : ''}`,
     );
     const strong = direct;
-    const key = `${candidate}:${strong.map(Number).join('')}:${reads.map((r) => r.itemId).join(',')}:${signatures.join(',')}`;
+    const catalog = JSON.stringify(Object.entries(names).sort(([a], [b]) => a.localeCompare(b)));
+    const key = `${candidate}:${catalog}:${strong.map(Number).join('')}:${reads.map((r) => r.itemId).join(',')}:${signatures.join(',')}`;
     this.activeEvidenceKey = key;
     const generation = this.generation;
     const outcomes = await Promise.all(
       crops.map((crop, slot): Promise<CardNameSlotOutcome> => {
         if (strong[slot]) return Promise.resolve({ slot, status: 'strong', itemId: reads[slot]!.itemId });
         // A changed neighbor must not repeat an already completed read of identical slot pixels.
-        const slotKey = `${candidate}:${slot}:${signatures[slot]}`;
+        const slotKey = `${candidate}:${catalog}:${slot}:${signatures[slot]}`;
         const previous = this.cache.get(slotKey);
         if (previous && previous.retryAt > Date.now()) return previous.result;
         const entry = { result: null as unknown as Promise<CardNameSlotOutcome>, retryAt: Infinity };
@@ -118,17 +106,17 @@ export class CardNameConfirmation {
           try {
             const text = await this.readText(crop);
             primary = Object.freeze({ ...text, cropSignature: signature(crop) });
-            const exact = exactCardNameId(text.text, text.confidence, names);
-            if (exact) return { slot, status: 'exact', itemId: exact, primary };
+            const match = matchCardName(text.text, names);
+            if (match.kind !== 'unknown') return { slot, status: match.kind, itemId: match.itemId, primary };
             if (generation !== this.generation || !softCrops[slot])
-              return { slot, status: 'unknown', itemId: 0, reason: unknownReason(primary, names), primary };
-            // One alternate preprocessing pass; the exact unique name/confidence gate stays identical.
+              return { slot, status: 'unknown', itemId: 0, reason: match.reason, primary };
+            // One alternate preprocessing pass; ambiguous or incomplete text never authorizes a card.
             const retry = await this.readText(softCrops[slot]!);
             const alternate = Object.freeze({ ...retry, cropSignature: signature(softCrops[slot]!) });
-            const itemId = exactCardNameId(retry.text, retry.confidence, names);
-            return itemId
-              ? { slot, status: 'exact', itemId, primary, alternate }
-              : { slot, status: 'unknown', itemId: 0, reason: unknownReason(alternate, names), primary, alternate };
+            const retried = matchCardName(retry.text, names);
+            return retried.kind !== 'unknown'
+              ? { slot, status: retried.kind, itemId: retried.itemId, primary, alternate }
+              : { slot, status: 'unknown', itemId: 0, reason: retried.reason, primary, alternate };
           } catch {
             // Only transient service failures repeat unchanged evidence. Completed unknown text is final
             // until pixels change or reset/F8 starts a new capture generation.

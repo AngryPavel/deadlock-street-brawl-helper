@@ -511,7 +511,7 @@ describe('worker confirmed state', () => {
     await actualCardPixels('round2-choice2');
     expect((await accept()).reads.map((r) => r.itemId)).toEqual(expected);
   }, 20_000);
-  it('recovers the actual R3C2 thin glyphs with one exact grayscale retry, skipping its strong neighbors', async () => {
+  it('recovers the actual R3C2 complete name from its primary crop, skipping its strong neighbors', async () => {
     state.round = 3;
     state.choice = 2;
     state.actualCards = true;
@@ -526,9 +526,9 @@ describe('worker confirmed state', () => {
     expect(final.reads[0]).toMatchObject({ present: true, rare: true, enhanced: true });
     expect(final.reads[0]!.match.score).toBeLessThan(0.82);
     expect(final).toMatchObject({ round: 3, choice: 2, accepted: true, transition: 'initial' });
-    expect(state.nameReads).toHaveBeenCalledTimes(2);
+    expect(state.nameReads).toHaveBeenCalledTimes(1);
   }, 20_000);
-  it('confirms the actual R3C3 long tilted name above the strict confidence floor before offering advice', async () => {
+  it('confirms the actual R3C3 complete tilted name before offering advice', async () => {
     state.round = 3;
     state.choice = 3;
     state.actualCards = true;

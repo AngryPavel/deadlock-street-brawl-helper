@@ -4,9 +4,27 @@ import sharp from 'sharp';
 import { cardNameRegions, itemNameCrop } from '../cardNames';
 import { CardNameConfirmation, exactCardNameId, strongDirectCard } from '../cardNameConfirmation';
 import { readItemName, stopItemNameOCR } from '../cardNameOcr';
+import { matchCardName } from '../cardNameMatch';
 import { itemByName, items } from '../../brawl/__tests__/testData';
 import { cardAnchors, decodeIconIndex, readDraftScreen } from '../../brawl/recognise';
 const names = Object.fromEntries(items.map((item) => [item.id, item.name]));
+const loadDraft = async (fixture: string) => {
+  const root = `src/brawl/__tests__/assets/${fixture}`;
+  const layout = JSON.parse(readFileSync(`${root}.json`, 'utf8')) as {
+    width: number;
+    height: number;
+    regions: { x: number; y: number; width: number; height: number; top: number }[];
+  };
+  const { data: packed, info } = await sharp(`${root}.webp`).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const data = new Uint8Array(layout.width * layout.height * 4);
+  for (const region of layout.regions)
+    for (let y = 0; y < region.height; y++)
+      data.set(
+        packed.subarray((region.top + y) * info.width * 4, ((region.top + y) * info.width + region.width) * 4),
+        ((region.y + y) * layout.width + region.x) * 4,
+      );
+  return { data, width: layout.width, height: layout.height, channels: 4 as const };
+};
 afterAll(stopItemNameOCR);
 describe('strict positive text evidence for existing weak direct fixtures', () => {
   it.each([
@@ -23,26 +41,9 @@ describe('strict positive text evidence for existing weak direct fixtures', () =
       rare: false,
     },
   ])(
-    '$fixture recovers narrow glyphs through one generic alternate and leaves strong neighbors alone',
+    '$fixture recovers complete names and leaves strong neighbors alone',
     async ({ fixture, slot, offers, rare }) => {
-      const root = `src/brawl/__tests__/assets/${fixture}`;
-      const layout = JSON.parse(readFileSync(`${root}.json`, 'utf8')) as {
-        width: number;
-        height: number;
-        regions: { x: number; y: number; width: number; height: number; top: number }[];
-      };
-      const { data: packed, info } = await sharp(`${root}.webp`)
-        .ensureAlpha()
-        .raw()
-        .toBuffer({ resolveWithObject: true });
-      const data = new Uint8Array(layout.width * layout.height * 4);
-      for (const region of layout.regions)
-        for (let y = 0; y < region.height; y++)
-          data.set(
-            packed.subarray((region.top + y) * info.width * 4, ((region.top + y) * info.width + region.width) * 4),
-            ((region.y + y) * layout.width + region.x) * 4,
-          );
-      const image = { data, width: layout.width, height: layout.height, channels: 4 as const };
+      const image = await loadDraft(fixture);
       const index = decodeIconIndex(JSON.parse(readFileSync('public/data/brawl-icons.json', 'utf8')));
       const tiers = Object.fromEntries(items.map((item) => [item.id, item.item_tier]));
       const reads = readDraftScreen(image, index, (id) => tiers[id] ?? 0);
@@ -54,15 +55,16 @@ describe('strict positive text evidence for existing weak direct fixtures', () =
         cardNameRegions(image.width, image.height, cardAnchors(image.width, image.height))[slot]!,
       );
       const first = await readItemName(primary);
-      expect(exactCardNameId(first.text, first.confidence, names)).toBe(0);
+      const primaryMatch = matchCardName(first.text, names);
       const readText = vi.fn(readItemName);
       const resolved = await new CardNameConfirmation(readText).resolve(image, reads, names, tiers, 'regression');
       expect(resolved?.map((read) => read.itemId)).toEqual(offers.map((name) => itemByName(name).id));
       expect(resolved?.[slot]).toMatchObject({ enhanced: true, rare });
       for (let neighbor = 0; neighbor < direct.length; neighbor++)
         if (direct[neighbor]) expect(resolved?.[neighbor]).toBe(reads[neighbor]);
-      expect(readText.mock.calls.filter(([crop]) => crop.interpolation === 'nearest')).toHaveLength(1);
-      expect(readText.mock.calls).toHaveLength(direct.filter((strong) => !strong).length + 1);
+      const retries = primaryMatch.itemId ? 0 : 1;
+      expect(readText.mock.calls.filter(([crop]) => crop.interpolation === 'nearest')).toHaveLength(retries);
+      expect(readText.mock.calls).toHaveLength(direct.filter((strong) => !strong).length + retries);
     },
     20_000,
   );
