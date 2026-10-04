@@ -12,7 +12,9 @@ async function worker() {
       options = { langPath: fileURLToPath(new URL('../../public/ocr/', import.meta.url)), gzip: true };
     } else {
       const base = (
-        import.meta.env.DEV ? new URL('/ocr/', self.location.href) : new URL('../ocr/', self.location.href)
+        import.meta.env.DEV
+          ? new URL('/ocr/', self.location.href)
+          : new URL(typeof window === 'undefined' ? '../ocr/' : './ocr/', self.location.href)
       ).href.replace(/\/$/, '');
       options = { workerPath: `${base}/worker.min.js`, corePath: base, langPath: base, gzip: true };
     }
@@ -26,7 +28,7 @@ async function worker() {
   return pending;
 }
 
-export function readItemName(crop: { data: Uint8Array; width: number; height: number }) {
+export function readItemName(crop: { data: Uint8Array; width: number; height: number }, digitsOnly = false) {
   const session = generation;
   const job = queue
     .catch(() => {})
@@ -52,6 +54,12 @@ export function readItemName(crop: { data: Uint8Array; width: number; height: nu
       }
       const instance = await worker();
       if (session !== generation) throw new Error('Item OCR stopped');
+      await instance.setParameters({
+        tessedit_pageseg_mode: PSM.SINGLE_LINE,
+        tessedit_char_whitelist: digitsOnly
+          ? '0123456789'
+          : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 '-&",
+      });
       const result = await instance.recognize(png as unknown as Buffer);
       return { text: result.data.text, confidence: result.data.confidence };
     });

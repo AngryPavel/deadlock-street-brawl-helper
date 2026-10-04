@@ -21,6 +21,7 @@ export interface BrawlAnalytics {
 
 /** public/data/brawl-config.json: the `street_brawl` block of the assets API generic data. */
 export interface BrawlConfig {
+  apper_round?: number[];
   gold_per_round: number[];
   buy_time: number[];
   pre_buy_time: number[];

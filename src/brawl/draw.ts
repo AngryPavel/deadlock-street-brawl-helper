@@ -19,6 +19,7 @@ export interface OverlayAdviceCard {
 /** Everything the overlay panel needs to render the same advice as the pop-out, without alt-tabbing:
  *  names not ids, since the overlay window has no access to the item/ability catalog. */
 export interface OverlayAdvice {
+  detail?: 'detailed' | 'compact';
   rerollsRemaining?: number | null;
   hero: string;
   round: number;

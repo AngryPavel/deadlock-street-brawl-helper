@@ -16,6 +16,7 @@ export function AbilityPanel({ panel, className = '' }: { panel: AbilityPanelDat
     >
       <div className="ap-title">
         Round {panel.round}: {panel.points} points
+        {panel.availablePoints !== undefined && <span> · {panel.availablePoints ?? '?'} available</span>}
       </div>
       {panel.slots.map((s) => (
         <div key={s.key} className="ap-col" data-ability={s.name}>

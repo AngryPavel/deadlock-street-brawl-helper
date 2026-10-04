@@ -88,6 +88,7 @@ interface PanelSlot {
 
 /** The ability upgrade panel for one round: the hero's four abilities in bar order with each point's state. */
 export interface AbilityPanelData {
+  availablePoints?: number | null;
   round: number;
   /** Ability points this round hands out (6/6/5/5/10). */
   points: number;

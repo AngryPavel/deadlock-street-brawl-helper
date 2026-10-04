@@ -5,6 +5,8 @@ import { BrawlView } from './components/BrawlView';
 import { TierList } from './components/TierList';
 import { TitleBar } from './components/TitleBar';
 import { DataUpdates } from './components/DataUpdates';
+import { OverlaySettingsPanel } from './local/OverlaySettingsPanel';
+import { DEFAULT_OVERLAY_SETTINGS, isOverlaySettings } from './local/overlaySettings';
 import { usePersisted, isNumber, isString } from './hooks/usePersisted';
 
 const INFERNUS = 1;
@@ -25,6 +27,11 @@ export default function App() {
   const [tab, setTab] = usePersisted<Tab>('tab', isTab, 'advisor');
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState(false); // hidden Debug panel; never persisted
+  const [overlaySettings, setOverlaySettings] = usePersisted(
+    'overlaySettings',
+    isOverlaySettings,
+    DEFAULT_OVERLAY_SETTINGS,
+  );
   const [now, setNow] = useState(Date.now);
   const [dataRevision, setDataRevision] = useState(0);
   const applyData = async () => {
@@ -144,6 +151,7 @@ export default function App() {
         </div>
       </header>
       <DataUpdates manifest={manifest} onApply={applyData} />
+      <OverlaySettingsPanel settings={overlaySettings} onChange={setOverlaySettings} />
       <nav className="tabs" role="tablist" aria-label="View">
         {TABS.map((t) => (
           <button
@@ -167,6 +175,7 @@ export default function App() {
           abilities={abilities}
           onHero={handleHero}
           debug={debug}
+          overlaySettings={overlaySettings}
         />
       </div>
       {tab === 'tiers' && <TierList key={dataRevision} heroes={heroes} items={items} />}

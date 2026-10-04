@@ -15,3 +15,29 @@
   font-size: 0.9em;
   color: #bfe8ed;
 }
+
+.overlay-panel-detailed {
+  left: 1%;
+  right: auto;
+  max-width: min(480px, 45vw);
+  font-size: 14px;
+  padding: 8px 10px;
+}
+.overlay-panel-head {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.overlay-panel-status {
+  font-size: 11px;
+  opacity: 0.8;
+  margin-top: 5px;
+}
+.overlay-settings {
+  padding: 6px 14px;
+  text-align: right;
+}
+.overlay-settings-dialog label {
+  display: grid;
+  gap: 5px;
+  margin: 14px 0;
+}

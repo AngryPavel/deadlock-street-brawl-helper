@@ -1,4 +1,8 @@
 import { DraftFrameGate } from '../local/draftFrameGate';
+import { availableReroll, DEFAULT_OVERLAY_SETTINGS, type OverlaySettings } from '../local/overlaySettings';
+import { AbilityPointsReader, abilityPointsRect } from '../local/abilityPointsReader';
+import { stopItemNameOCR } from '../local/cardNameOcr';
+import { AbilityTipPolicy } from '../local/abilityTipPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
 import { createPortal } from 'react-dom';
@@ -27,7 +31,6 @@ import {
   BRAWL_LAYOUT,
   REROLL_SEARCH,
   findRerollButton,
-  TIP_MS,
   type AbilityPanelData,
   type TipState,
 } from '../brawl';
@@ -73,10 +76,24 @@ interface Props {
   onHero: (id: number, source?: 'detected' | 'manual') => void;
   /** The hidden Debug panel (Ctrl+Shift+D) is open: shows the manual controls and the full advice list. */
   debug?: boolean;
+  overlaySettings?: OverlaySettings;
 }
 
 /** Street Brawl draft advisor: the three cards on screen (read from a screen capture or typed in), ranked for this hero. */
-export function BrawlView({ hero, heroes, items, abilities, onHero, debug = false }: Props) {
+export function BrawlView({
+  hero,
+  heroes,
+  items,
+  abilities,
+  onHero,
+  debug = false,
+  overlaySettings = DEFAULT_OVERLAY_SETTINGS,
+}: Props) {
+  const settingsRef = useRef(overlaySettings);
+  settingsRef.current = overlaySettings;
+  const allocatedRef = useRef(0);
+  const pointPolicyRef = useRef(new AbilityTipPolicy());
+  const tipModeRef = useRef(overlaySettings.abilityTipMode);
   const [loaded, setLoaded] = useState<{ heroId: number; analytics: BrawlAnalytics } | null>(null);
   const [config, setConfig] = useState<BrawlConfig | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -231,13 +248,16 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   useEffect(() => {
     rankedRef.current = ranked;
   }, [ranked]);
-  const reroll = advice?.reroll && rerolls > 0 ? advice.reroll : null;
+  const reroll = availableReroll(advice?.reroll, rerollsLeft);
   useEffect(() => {
     rerollRef.current = reroll;
   }, [reroll]);
   const tiers = input ? roundTiers(input, round) : [];
   const topItems = useMemo(() => (input ? topItemsByTier(input) : []), [input]);
   const abilityOrder = useMemo(() => (input ? brawlAbilityOrder(input) : null), [input]);
+  allocatedRef.current = (config?.apper_round ?? [6, 6, 5, 5, 10])
+    .slice(0, round)
+    .reduce((sum, points) => sum + points, 0);
   const abilityStepNow = abilityStepIndex(round, choice);
   // The standard point allocation for this round, shown ~15 s after the draft closes (latched then).
   const abilityTarget = useMemo(
@@ -282,6 +302,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     overlayAdviceRef.current = input
       ? {
           hero: hero.name,
+          detail: overlaySettings.detail,
           rerollsRemaining: rerollsLeft,
           round,
           choice,
@@ -303,7 +324,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     tipRef.current = tip;
     pushOverlay();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pushOverlay only reads refs
-  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById, rerollsLeft]);
+  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById, rerollsLeft, overlaySettings]);
 
   /** Ends a Detect now try and logs `detect.manual` with the outcome. */
   function finishDetect(outcome: 'hit' | 'miss' | 'failed') {
@@ -681,18 +702,37 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         .catch(() => {});
     };
     let tipTimer: ReturnType<typeof setTimeout> | undefined;
-    const tipMs = window.brawlAPI?.isE2E && window.brawlAPI.tipMs ? window.brawlAPI.tipMs : TIP_MS;
+    const pointsReader = new AbilityPointsReader();
+    const pointPolicy = pointPolicyRef.current;
+    let disposed = false;
+    let hudCanvas: HTMLCanvasElement | null = null;
+    const usesPoints = () => tipModeRef.current === 'points';
+    const armTip = () => {
+      const current = tipStateRef.current;
+      tipRef.current = current.tip?.value ?? null;
+      setTip(current.tip?.value ?? null);
+      clearTimeout(tipTimer);
+      if (current.tip)
+        tipTimer = setTimeout(() => stepTracker(false), Math.max(0, current.tip.endsAt - Date.now()) + 5);
+      pushOverlay();
+    };
     // Feeds the debounced draft/tip tracker one frame result, and (re)arms the timer that ends the tip on its own.
     const stepTracker = (shop: boolean) => {
-      const next = stepTip(tipStateRef.current, shop, Date.now(), abilityTargetRef.current, tipMs);
+      const now = Date.now();
+      const testMs = window.brawlAPI?.isE2E ? window.brawlAPI.tipMs : undefined;
+      const tipMs = testMs ?? settingsRef.current.tipSeconds * 1000;
+      const previous = tipStateRef.current;
+      const next = stepTip(previous, shop, now, abilityTargetRef.current, tipMs);
+      if (next.tip && !previous.tip) {
+        pointsReader.reset();
+        tipModeRef.current = settingsRef.current.abilityTipMode;
+        pointPolicy.begin(now, testMs ?? settingsRef.current.pointLimitSeconds * 1000, allocatedRef.current);
+      }
+      if (shop) pointsReader.reset();
       tipStateRef.current = next;
       draftRef.current = next.draft;
-      tipRef.current = next.tip?.value ?? null;
       setDraftOpen(next.draft);
-      setTip(next.tip?.value ?? null);
-      clearTimeout(tipTimer);
-      if (next.tip) tipTimer = setTimeout(() => stepTracker(false), Math.max(0, next.tip.endsAt - Date.now()) + 5);
-      pushOverlay();
+      armTip();
     };
     const sendFrame = (full: boolean) => perf.time(full ? 'copy.draft' : 'copy.probe', () => copyFrame(full));
     const copyFrame = (full: boolean) => {
@@ -709,6 +749,36 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         return;
       }
       frameDimsRef.current = { w: srcW, h: srcH };
+      if (usesPoints() && tipStateRef.current.tip) {
+        const rect = abilityPointsRect(srcW, srcH);
+        hudCanvas ??= document.createElement('canvas');
+        if (hudCanvas.width !== rect.width) hudCanvas.width = rect.width;
+        if (hudCanvas.height !== rect.height) hudCanvas.height = rect.height;
+        const ctx = hudCanvas.getContext('2d', { willReadFrequently: true })!;
+        ctx.drawImage(src, rect.x, rect.y, rect.width, rect.height, 0, 0, rect.width, rect.height);
+        const image = ctx.getImageData(0, 0, rect.width, rect.height);
+        pointsReader.poll(
+          { width: rect.width, height: rect.height, data: image.data, channels: 4 },
+          performance.now(),
+          (points) => {
+            if (disposed || !usesPoints() || !tipStateRef.current.tip || draftRef.current) return;
+            const tip = tipStateRef.current.tip;
+            const end = pointPolicy.update(points, tip.endsAt);
+            tipStateRef.current = {
+              ...tipStateRef.current,
+              tip:
+                end === null
+                  ? null
+                  : {
+                      endsAt: end,
+                      value: { ...tip.value, availablePoints: typeof points === 'number' ? points : null },
+                    },
+            };
+            log('brawl-view', 'info', 'ability.points', { points, visible: end !== null });
+            armTip();
+          },
+        );
+      }
       if (!full) {
         // Not on the draft screen: copy only the "CHOICE n OF 3" crop, not the whole frame.
         const r = shopProbeRect(srcW, srcH);
@@ -975,6 +1045,9 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     w.addEventListener('message', onMessage);
     sendFrame(false); // the worker's first tick may have arrived before this listener existed
     return () => {
+      disposed = true;
+      pointsReader.reset();
+      void stopItemNameOCR();
       clearTimeout(tipTimer);
       clearTimeout(frames.timer);
       if (vid && frames.supported) vid.cancelVideoFrameCallback(vfcId);

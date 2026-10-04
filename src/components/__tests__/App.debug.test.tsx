@@ -23,6 +23,27 @@ vi.mock('../../data/load', () => ({
 afterEach(cleanup);
 
 describe('App Debug panel', () => {
+  it('persists detailed/compact advice and both ability-tip time controls across launches', async () => {
+    localStorage.removeItem('brawl.overlaySettings');
+    const first = render(<App />);
+    await screen.findByRole('button', { name: 'Overlay settings' });
+    fireEvent.change(screen.getByLabelText('Item advice'), { target: { value: 'compact' } });
+    fireEvent.change(screen.getByLabelText('Ability upgrade tip'), { target: { value: 'fixed' } });
+    fireEvent.change(screen.getByLabelText('Fixed time / unreadable HUD fallback (seconds)'), {
+      target: { value: '25' },
+    });
+    fireEvent.change(screen.getByLabelText('Maximum time in HUD points mode (seconds)'), { target: { value: '80' } });
+    first.unmount();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Overlay settings' });
+    expect((screen.getByLabelText('Item advice') as HTMLSelectElement).value).toBe('compact');
+    expect((screen.getByLabelText('Ability upgrade tip') as HTMLSelectElement).value).toBe('fixed');
+    expect((screen.getByLabelText('Fixed time / unreadable HUD fallback (seconds)') as HTMLInputElement).value).toBe(
+      '25',
+    );
+    expect((screen.getByLabelText('Maximum time in HUD points mode (seconds)') as HTMLInputElement).value).toBe('80');
+    localStorage.removeItem('brawl.overlaySettings');
+  });
   it('is hidden at start and Ctrl+Shift+D toggles it', async () => {
     render(<App />);
     await screen.findByRole('button', { name: /start capture/i });

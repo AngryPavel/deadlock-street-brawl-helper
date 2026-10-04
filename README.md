@@ -63,16 +63,22 @@ npm run win:dev                    # From WSL: run the Windows app from a synced
 - Re-roll advice compares the best card on screen with what a fresh set is expected to offer, and the
   box moves to the Use Re-Roll button when a re-roll is the better call.
 - The legendary items that only appear in Street Brawl are ranked with everything else.
-- An ability upgrade order for your hero, with the step you're probably on highlighted. In the Windows
-  app a picture of the ability points panel shows this round's points for about 15 seconds after the
-  draft closes.
+- An ability upgrade order for your hero, with the step you're probably on highlighted. After the
+  draft closes, a compact panel shows the suggested allocation and can follow the available HUD points.
 - A second tab grades every hero and every draftable item S, A, B or C.
 - Ultrawide draft layouts are recognized using a centered, height-scaled HUD.
 - If an icon cannot be recognized, offline OCR can recover the English item name. Confirmed cards stay
   visible through hover tooltips until the choice changes or a re-roll is spent.
 - The **Re-rolls** counter is shown in the advice overlay. Unknown counts disable re-roll suggestions;
   confirmed counts survive covered labels and are read again when the round changes.
-- The ability tip is compact, bottom-left, 50% opaque and lasts 15 seconds.
+- **Overlay settings** switches between detailed item advice (hero, all three items, scores, usage,
+  win rates and recognition status) and compact action-only advice. Both keep the re-roll counter.
+- The ability tip is bottom-left and 50% opaque. Choose a fixed display time or HUD points mode;
+  ability-tip settings apply to the next tip. Defaults: 15 seconds fixed/unreadable fallback, 60 seconds maximum
+  in HUD mode. Two matching reads confirm the counter; zero and the lobby infinity hide the tip.
+  Remaining points do not necessarily buy an upgrade: tier costs are 1/2/5, and all four abilities
+  cost 32 in total. The app hides a provably unspendable bank and bounds ambiguous cases with a timeout;
+  it cannot determine every purchased tier from the point counter alone.
 - If the capture misses a card, you can enter the three yourself.
 - A test mode in the Windows app opens a dummy Deadlock window with a real draft screenshot, so you can
   try the overlay without the game running.

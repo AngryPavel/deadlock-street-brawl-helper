@@ -277,6 +277,25 @@ async function main() {
       `(() => { const d=document.querySelector('.data-update-dialog'); const b=[...d.querySelectorAll('button')].find(b=>b.textContent==='Close'); b?.click(); })()`,
     );
 
+    const overlaySettings = await js(
+      control,
+      `(() => {
+      document.querySelector('.overlay-settings button').click();
+      const d = document.querySelector('.overlay-settings-dialog');
+      const values = [...d.querySelectorAll('select,input')].map(e=>e.value);
+      const fits = d.scrollWidth <= d.clientWidth && d.getBoundingClientRect().width <= innerWidth;
+      const open = d.open;
+      d.close();
+      return { open, values, fits };
+    })()`,
+    );
+    check(
+      'overlay-settings-dialog',
+      overlaySettings.open &&
+        overlaySettings.fits &&
+        JSON.stringify(overlaySettings.values) === JSON.stringify(['detailed', 'points', '15', '60']),
+      JSON.stringify(overlaySettings),
+    );
     // Debug panel: hidden at launch, Ctrl+Shift+D toggles it, the tray entry toggles the same state.
     const hasDebug = () => js(control, '!!document.querySelector("[aria-label=\\"Debug panel\\"]")');
     const slim = await js(
@@ -476,6 +495,21 @@ async function main() {
       50,
     );
     check('reroll-counter-visible', !!counter, 'Re-rolls: 1 read from the draft label');
+    const detailedPanel = await js(
+      overlay,
+      `(() => {
+      const p = document.querySelector('.overlay-panel');
+      return { rows:p?.querySelectorAll('.overlay-panel-card').length, text:p?.textContent };
+    })()`,
+    );
+    check(
+      'detailed-advice-visible',
+      detailedPanel.rows === 3 &&
+        detailedPanel.text.includes('round 1, choice 1') &&
+        detailedPanel.text.includes('% picks') &&
+        detailedPanel.text.includes('% wins'),
+      JSON.stringify(detailedPanel),
+    );
     // Overlay geometry + click-through while the draft is up.
 
     const bounds = win.getBounds();
