@@ -1150,7 +1150,7 @@ export function shopProbeRect(width: number, height: number) {
 /** Every part of a `width`x`height` draft frame the recogniser ever reads, in frame px: the three card icons (with
  *  the position/scale search slack and the tier numeral), the hero bar with the ROUND label, the CHOICE label, the
  *  re-roll caption and the inventory grid. Everything else on screen is never looked at, so the page copies only
- *  these rectangles out of the video instead of the whole frame (under 25 % of its pixels). Padded past what the reads
+ *  these rectangles out of the video instead of the whole frame (under 26 % of its pixels). Padded past what the reads
  *  touch; `regions.test.ts` checks that masking a real frame to these changes no read. */
 export interface Region {
   x: number;

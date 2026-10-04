@@ -46,7 +46,7 @@ describe('team average hero win rates', () => {
     expect(reversed.enemyHeroes).toEqual(edge.ownHeroes);
     expect(edge.window).toContain('2026-10-02');
   });
-  it('requires all eight valid heroes, names, and positive valid sample counts', () => {
+  it('requires a confirmed side and valid roster, and keeps unavailable data explicit without team means', () => {
     for (const r of [
       { ...roster, self: 9 },
       { ...roster, left: [1, 2, 3] },
@@ -60,16 +60,29 @@ describe('team average hero win rates', () => {
           { ...data, heroes: data.heroes.map((h) => (h.hero_id === 8 ? { ...h, ...patch } : h)) },
           heroes,
         ),
-      ).toBeNull();
-    expect(teamWinRate(roster, { ...data, heroes: data.heroes.slice(0, 7) }, heroes)).toBeNull();
-    expect(teamWinRate(roster, data, heroes.slice(0, 7))).toBeNull();
+      ).toMatchObject({ ownWinRate: null, enemyWinRate: null, deltaPp: null });
+    expect(teamWinRate(roster, { ...data, heroes: data.heroes.slice(0, 7) }, heroes)?.enemyHeroes[3]).toMatchObject({
+      name: 'Kelvin',
+      winRate: null,
+      unavailable: 'missing-data',
+    });
+    expect(teamWinRate(roster, data, heroes.slice(0, 7))?.enemyHeroes[3]).toMatchObject({
+      winRate: null,
+      unavailable: 'missing-data',
+    });
     expect(
       teamWinRate(
         roster,
         data,
         heroes.map((h) => (h.id === 8 ? { ...h, name: ' ' } : h)),
       ),
-    ).toBeNull();
+    ).toMatchObject({ ownWinRate: null, enemyWinRate: null, deltaPp: null });
+    expect(teamWinRate({ ...roster, self: 0 }, data, heroes)).toBeNull();
+    expect(teamWinRate(roster, null, heroes)?.ownHeroes[0]).toMatchObject({
+      name: 'Abrams',
+      winRate: null,
+      unavailable: 'loading-data',
+    });
   });
   it('confirms two independent complete roster reads and holds through partial tooltips until reset', () => {
     const confirmation = new TeamRosterConfirmation();
@@ -82,6 +95,49 @@ describe('team average hero win rates', () => {
     expect(confirmation.value).toEqual(roster);
     confirmation.observe(meta({ ...roster, left: [1, 0, 0, 0] }));
     expect(confirmation.value).toEqual(roster);
+    confirmation.reset();
+    expect(confirmation.value).toBeNull();
+  });
+  it('confirms a partial lineup without guessing the missing hero, and keeps retrying until it becomes complete', () => {
+    const confirmation = new TeamRosterConfirmation();
+    const partial = { ...roster, left: [1, 2, 3, 0] };
+    confirmation.observe(meta(partial));
+    expect(confirmation.value).toBeNull();
+    confirmation.observe(meta(partial));
+    expect(confirmation.value).toEqual(partial);
+    expect(confirmation.complete).toBe(false);
+    const edge = teamWinRate(confirmation.value, data, heroes)!;
+    expect(edge.ownHeroes[3]).toEqual({ heroId: 0, name: 'Reading hero', winRate: null, unavailable: 'reading-hero' });
+    expect(edge.ownHeroes[0]!.winRate).toBe(0.6);
+    expect(edge).toMatchObject({ ownWinRate: null, enemyWinRate: null, deltaPp: null });
+    confirmation.observe(meta(roster));
+    confirmation.observe(meta(roster));
+    expect(confirmation.complete).toBe(true);
+    expect(teamWinRate(confirmation.value, data, heroes)!.deltaPp).toBeCloseTo(20);
+  });
+  it('does not borrow a portrait into a duplicate slot when a partial lineup moves', () => {
+    const confirmation = new TeamRosterConfirmation();
+    const previous = { self: 1, left: [1, 2, 0, 4], right: [5, 6, 7, 8] };
+    confirmation.observe(meta(previous));
+    confirmation.observe(meta(previous));
+    const fresh = { ...previous, left: [1, 0, 2, 4] };
+    confirmation.observe(meta(fresh));
+    confirmation.observe(meta(fresh));
+    expect(confirmation.value).toEqual(fresh);
+    expect(teamWinRate(confirmation.value, data, heroes)).toBeTruthy();
+    expect(confirmation.complete).toBe(false);
+  });
+  it('replaces a changed confirmed lineup with partial current evidence without importing old unknown slots', () => {
+    const confirmation = new TeamRosterConfirmation();
+    confirmation.observe(meta(roster));
+    confirmation.observe(meta(roster));
+    const changed = { ...roster, right: [5, 6, 9, 0] };
+    confirmation.observe(meta(changed));
+    expect(confirmation.value).toEqual(roster);
+    confirmation.observe(meta(changed));
+    expect(confirmation.value).toEqual(changed);
+    expect(confirmation.complete).toBe(false);
+    expect(teamWinRate(confirmation.value, data, heroes)?.deltaPp).toBeNull();
     confirmation.reset();
     expect(confirmation.value).toBeNull();
   });

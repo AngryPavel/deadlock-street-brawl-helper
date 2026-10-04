@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
 import { FirstRoundPreparation, hasRoundCountdown, roundCountdownRegion } from '../firstRoundPreparation';
 import type { RGBImage } from '../../brawl/recognise';
+import { readFileSync } from 'node:fs';
 
 const fixture = 'src/local/__tests__/assets/round-countdown.png';
 async function captionFrame(width = 3439, height = 1439, dx = 0, dy = 0): Promise<RGBImage> {
@@ -20,6 +21,14 @@ async function captionFrame(width = 3439, height = 1439, dx = 0, dy = 0): Promis
 }
 
 describe('fixed round preparation caption', () => {
+  it('reads both actual first-round draft caption positions before all picks are complete', async () => {
+    for (const name of ['choice1', 'choice3']) {
+      const file = `src/local/__tests__/assets/round-countdown-draft-${name}`;
+      const origin = JSON.parse(readFileSync(`${file}.json`, 'utf8'));
+      const { data, info } = await sharp(`${file}.png`).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      expect(hasRoundCountdown({ data, width: info.width, height: info.height, channels: 4, origin })).toBe(true);
+    }
+  });
   it('reads the real non-shop screenshot at ultrawide, 16:9 and height-scaled resolutions', async () => {
     for (const [w, h] of [
       [3439, 1439],
@@ -48,13 +57,13 @@ describe('fixed round preparation caption', () => {
     for (let i = 0; i < seconds.length; i += 4) if (seconds[i]! >= seconds[i + 1]!) seconds.fill(0, i, i + 3);
     expect(hasRoundCountdown({ ...image, data: seconds })).toBe(false);
   });
-  it('rejects actual draft frames with no countdown label', async () => {
-    for (const name of ['choice1', 'choice2', 'draft-r2c3-reroll', 'gameplay', 'inround-r3']) {
+  it('accepts actual first drafts with the caption and rejects frames without it', async () => {
+    for (const name of ['choice1', 'choice2', 'gameplay', 'inround-r3']) {
       const { data, info } = await sharp(`public/demo/${name}.png`).raw().toBuffer({ resolveWithObject: true });
       expect(
         hasRoundCountdown({ data, width: info.width, height: info.height, channels: info.channels as 4 }),
         name,
-      ).toBe(false);
+      ).toBe(name === 'choice1' || name === 'choice2');
     }
   });
 });

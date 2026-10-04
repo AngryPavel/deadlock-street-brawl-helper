@@ -11,7 +11,7 @@ const warmInk = (r: number, g: number, b: number) => r >= 165 && g >= 145 && b >
 
 export function roundCountdownRegion(width: number, height: number) {
   const s = height / CAPTION.referenceHeight;
-  const x = Math.max(0, Math.floor(width - (CAPTION.right + 10) * s));
+  const x = Math.max(0, Math.floor(width - (CAPTION.right + 130) * s));
   const y = Math.max(0, Math.floor((CAPTION.top - 7) * s));
   return {
     x,
@@ -26,24 +26,26 @@ export function roundCountdownRegion(width: number, height: number) {
 export function hasRoundCountdown(img: RGBImage): boolean {
   const width = img.origin?.fullWidth ?? img.width;
   const height = img.origin?.fullHeight ?? img.height;
-  const region = roundCountdownRegion(width, height);
-  if (!region.width || !region.height) return false;
+  const requested = roundCountdownRegion(width, height);
   const ox = img.origin?.x ?? 0;
   const oy = img.origin?.y ?? 0;
-  if (
-    region.x < ox ||
-    region.y < oy ||
-    region.x + region.width > ox + img.width ||
-    region.y + region.height > oy + img.height
-  )
-    return false;
+  const region = {
+    x: Math.max(requested.x, ox),
+    y: Math.max(requested.y, oy),
+    width: Math.min(requested.x + requested.width, ox + img.width) - Math.max(requested.x, ox),
+    height: Math.min(requested.y + requested.height, oy + img.height) - Math.max(requested.y, oy),
+  };
+  if (region.width <= 0 || region.height <= 0) return false;
   const stride = region.width + 1;
   const integral = new Uint32Array(stride * (region.height + 1));
+  const columns = new Uint16Array(region.width);
   for (let y = 0; y < region.height; y++) {
     let row = 0;
     for (let x = 0; x < region.width; x++) {
       const i = ((region.y + y - oy) * img.width + region.x + x - ox) * img.channels;
-      row += Number(warmInk(img.data[i]!, img.data[i + 1]!, img.data[i + 2]!));
+      const lit = Number(warmInk(img.data[i]!, img.data[i + 1]!, img.data[i + 2]!));
+      row += lit;
+      columns[x] += lit;
       integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1]! + row;
     }
   }
@@ -51,36 +53,47 @@ export function hasRoundCountdown(img: RGBImage): boolean {
   const x0 = width - CAPTION.right * s - region.x;
   const y0 = CAPTION.top * s - region.y;
   const slack = Math.max(1, Math.round(2 * s));
-  for (const scale of [1, 0.98, 1.02])
-    for (let dy = -slack; dy <= slack; dy++)
-      for (let dx = -slack; dx <= slack; dx++) {
-        let ink = 0,
-          overlap = 0;
-        for (let y = 0; y < TH; y++)
-          for (let x = 0; x < TW; x++) {
-            const xa = Math.max(0, Math.round(x0 + dx + (x * CAPTION.width * s * scale) / TW));
-            const xb = Math.min(
-              region.width,
-              Math.max(xa + 1, Math.round(x0 + dx + ((x + 1) * CAPTION.width * s * scale) / TW)),
-            );
-            const ya = Math.max(0, Math.round(y0 + dy + (y * CAPTION.height * s * scale) / TH));
-            const yb = Math.min(
-              region.height,
-              Math.max(ya + 1, Math.round(y0 + dy + ((y + 1) * CAPTION.height * s * scale) / TH)),
-            );
-            const count =
-              integral[yb * stride + xb]! -
-              integral[ya * stride + xb]! -
-              integral[yb * stride + xa]! +
-              integral[ya * stride + xa]!;
-            const lit = count / ((xb - xa) * (yb - ya)) >= 0.4;
-            if (lit) {
-              ink++;
-              if (ROUND_COUNTDOWN_INK[y]![x] === '1') overlap++;
+  // The game's caption moves horizontally with its countdown layout. Find word-band starts only
+  // inside this bounded right-hand strip, then retain the same complete fixed-text template gate.
+  const starts = [x0];
+  let previous = -Infinity;
+  for (let x = 0; x < columns.length; x++)
+    if (columns[x]) {
+      if (x - previous > 14 * s && x + CAPTION.width * 0.98 * s <= region.width + slack) starts.push(x);
+      previous = x;
+    }
+  for (const start of starts)
+    for (const scale of [1, 0.98, 1.02])
+      for (let dy = -slack; dy <= slack; dy++)
+        for (let dx = -slack; dx <= slack; dx++) {
+          let ink = 0,
+            overlap = 0;
+          for (let y = 0; y < TH; y++)
+            for (let x = 0; x < TW; x++) {
+              const xa = Math.max(0, Math.round(start + dx + (x * CAPTION.width * s * scale) / TW));
+              const xb = Math.min(
+                region.width,
+                Math.max(xa + 1, Math.round(start + dx + ((x + 1) * CAPTION.width * s * scale) / TW)),
+              );
+              const ya = Math.max(0, Math.round(y0 + dy + (y * CAPTION.height * s * scale) / TH));
+              const yb = Math.min(
+                region.height,
+                Math.max(ya + 1, Math.round(y0 + dy + ((y + 1) * CAPTION.height * s * scale) / TH)),
+              );
+              if (xa >= region.width || ya >= region.height || xb <= xa || yb <= ya) continue;
+              const count =
+                integral[yb * stride + xb]! -
+                integral[ya * stride + xb]! -
+                integral[yb * stride + xa]! +
+                integral[ya * stride + xa]!;
+              const lit = count / ((xb - xa) * (yb - ya)) >= 0.4;
+              if (lit) {
+                ink++;
+                if (ROUND_COUNTDOWN_INK[y]![x] === '1') overlap++;
+              }
             }
-          }
-        if ((2 * overlap) / (TEMPLATE_INK + ink) >= 0.8) return true;
-      }
+          if ((2 * overlap) / (TEMPLATE_INK + ink) >= 0.8) return true;
+        }
   return false;
 }
 

@@ -27,25 +27,69 @@ export function cardNameRegions(
       x,
       y,
       width: Math.min(width, Math.ceil(a.cx + 300 * u)) - x,
-      height: Math.min(height, Math.ceil(a.cy + a.icon / 2 + 82 * u)) - y,
+      // Long tilted labels descend at the left edge; keep their complete glyphs before the badge below.
+      height: Math.min(height, Math.ceil(a.cy + a.icon / 2 + 94 * u)) - y,
     };
   });
 }
 
 export function itemNameCrop(img: RGBImage, region: Region) {
-  const data = new Uint8Array(region.width * region.height * 4);
+  // Tilted names can touch the band edge; white air keeps OCR's line finder confident without adding evidence.
+  const margin = 8,
+    width = region.width + 2 * margin,
+    height = region.height + 2 * margin;
+  const data = new Uint8Array(width * height * 4).fill(255);
   let hash = 2166136261;
   for (let y = 0; y < region.height; y++)
     for (let x = 0; x < region.width; x++) {
       const s = ((region.y + y) * img.width + region.x + x) * img.channels;
-      const i = (y * region.width + x) * 4;
+      const i = ((y + margin) * width + x + margin) * 4;
       const lum = Math.round(0.299 * img.data[s]! + 0.587 * img.data[s + 1]! + 0.114 * img.data[s + 2]!);
       // Names are cream/white; remove the coloured card rings that otherwise look like extra letters.
       data[i] = data[i + 1] = data[i + 2] = creamInk(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!) ? 0 : 255;
       data[i + 3] = 255;
       hash = Math.imul(hash ^ lum, 16777619);
     }
-  return { data, width: region.width, height: region.height, key: `${region.width}:${region.height}:${hash}` };
+  return { data, width, height, key: `${width}:${height}:${hash}` };
+}
+
+/** Preserve the edges of thin glyphs on a second pass, using the bright text to exclude nearby card art. */
+export function itemNameSoftCrop(img: RGBImage, region: Region) {
+  let left = region.width,
+    top = region.height,
+    right = -1,
+    bottom = -1;
+  for (let y = 0; y < region.height; y++)
+    for (let x = 0; x < region.width; x++) {
+      const s = ((region.y + y) * img.width + region.x + x) * img.channels;
+      if (!creamInk(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!)) continue;
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+  if (right < left) return null;
+  left = Math.max(0, left - 2);
+  top = Math.max(0, top - 2);
+  right = Math.min(region.width - 1, right + 2);
+  bottom = Math.min(region.height - 1, bottom + 2);
+  const margin = 16,
+    width = right - left + 1 + margin * 2,
+    height = bottom - top + 1 + margin * 2;
+  const data = new Uint8Array(width * height * 4).fill(255);
+  for (let y = top; y <= bottom; y++)
+    for (let x = left; x <= right; x++) {
+      const s = ((region.y + y) * img.width + region.x + x) * img.channels;
+      const low = Math.min(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!);
+      const high = Math.max(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!);
+      // Keep the faint antialiased strokes between narrow neighboring letters.
+      const value = high - low < 85 ? 255 - Math.max(0, Math.min(255, ((low - 90) * 255) / 125)) : 255;
+      const i = ((y - top + margin) * width + x - left + margin) * 4;
+      data[i] = data[i + 1] = data[i + 2] = value;
+    }
+  // Integer nearest enlargement preserves these antialiased pixels equally in Canvas and Sharp.
+  // Browser bilinear enlargement can blur two neighboring narrow glyphs into a low-confidence word.
+  return { data, width, height, scale: 4, interpolation: 'nearest' as const };
 }
 
 const normaliseName = (text: string) => text.toLowerCase().replace(/[^a-z0-9]/g, '');

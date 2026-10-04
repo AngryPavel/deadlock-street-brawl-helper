@@ -28,6 +28,28 @@ const styledPanel = (value: TeamWinRateEdge) => (
 );
 
 describe('TeamHeroWinRatePanel', () => {
+  it('shows known rates and distinct unread portrait/data states in a neutral partial panel', () => {
+    const partial = {
+      ...edge,
+      ownWinRate: null,
+      enemyWinRate: null,
+      deltaPp: null,
+      ownHeroes: edge.ownHeroes.map((h, i) =>
+        i === 3 ? { heroId: 0, name: 'Reading hero', winRate: null, unavailable: 'reading-hero' as const } : h,
+      ),
+      enemyHeroes: edge.enemyHeroes.map((h, i) =>
+        i === 3 ? { ...h, winRate: null, unavailable: 'missing-data' as const } : h,
+      ),
+    };
+    render(<TeamHeroWinRatePanel visible edge={partial} />);
+    const panel = screen.getByRole('complementary', { name: 'Team average hero win rates' });
+    expect(panel.dataset.direction).toBe('neutral');
+    expect(panel.textContent).toContain('Abrams61.0%');
+    expect(panel.textContent).toContain('Reading heroReading…');
+    expect(panel.textContent).toContain('KelvinNo win-rate data');
+    expect(panel.textContent).toContain('DifferenceUnavailable');
+    expect(panel.textContent).not.toContain(' pp');
+  });
   it('shows an explicitly confirmed preparation phase without draft advice, and hides immediately when disabled', () => {
     const { container, rerender } = render(<TeamHeroWinRatePanel visible draft={false} edge={edge} />);
     expect(screen.getByRole('complementary', { name: 'Team average hero win rates' })).toBeTruthy();

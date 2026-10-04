@@ -9,6 +9,7 @@ import { adviceConfidence } from '../local/adviceConfidence';
 import { teamWinRate, type TeamRoster } from '../local/teamWinRate';
 import { FirstRoundPreparation } from '../local/firstRoundPreparation';
 import { cardSlotSelection } from '../local/cardSlotSelection';
+import { itemReadStatusText, type ItemReadStatus } from '../local/itemReadStatus';
 import type { OfferObservation } from '../local/dropDistribution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
@@ -138,6 +139,7 @@ export function BrawlView({
   const captureStateRef = useRef<'off' | 'starting' | 'on'>('off');
   captureStateRef.current = capture;
   const [status, setStatus] = useState('');
+  const [itemReadStatus, setItemReadStatus] = useState<ItemReadStatus | null>(null);
   // Debounced "the item draft screen is up" and the ability tip that follows its closing (see abilityPanelTimer.ts).
   // The overlay draws nothing unless one of them is set.
   const [draftOpen, setDraftOpen] = useState(false);
@@ -209,8 +211,10 @@ export function BrawlView({
   const [tierData, setTierData] = useState<BrawlTierListData | null>(null);
   const teamRosterRef = useRef<TeamRoster | null>(null);
   const teamEdgeRef = useRef<ReturnType<typeof teamWinRate>>(null);
+  const lastRosterSampleRef = useRef('');
   const preparationRef = useRef(new FirstRoundPreparation());
   const [preparationOpen, setPreparationOpen] = useState(false);
+  const [draftPresent, setDraftPresent] = useState(false);
   const tierDataRef = useRef(tierData);
   tierDataRef.current = tierData;
   teamEdgeRef.current = teamWinRate(teamRosterRef.current, tierData, heroes);
@@ -430,6 +434,7 @@ export function BrawlView({
         : null;
     cardsRef.current = [];
     prevCardsRef.current = [];
+    setItemReadStatus(null);
     acceptedKeyRef.current = '';
     setRerollsLeft(null);
     unreadFramesRef.current = 0;
@@ -475,6 +480,8 @@ export function BrawlView({
     workerRef.current?.postMessage({ type: 'stop' } satisfies WorkerIn);
     tipStateRef.current = initialTip();
     preparationRef.current.reset();
+    setDraftPresent(false);
+    setItemReadStatus(null);
     setPreparationOpen(false);
     if (!preserveTeam) {
       refreshIdentityRef.current = null;
@@ -692,7 +699,8 @@ export function BrawlView({
   // With a real game the stream is only for the draft: once neither the draft screen nor the ability tip is up for a
   // few seconds, stop capturing and tell main.ts to go back to probing.
   useEffect(() => {
-    if (!isElectron || capture !== 'on' || draftOpen || tip || preparationOpen || !probeModeRef.current) return;
+    if (!isElectron || capture !== 'on' || draftOpen || draftPresent || tip || preparationOpen || !probeModeRef.current)
+      return;
     const t = setTimeout(() => {
       captureWantedRef.current = false;
       stopCapture();
@@ -700,7 +708,7 @@ export function BrawlView({
       window.brawlAPI!.captureIdle();
     }, CAPTURE_IDLE_MS);
     return () => clearTimeout(t);
-  }, [capture, draftOpen, tip, preparationOpen, stopCapture]);
+  }, [capture, draftOpen, draftPresent, tip, preparationOpen, stopCapture]);
 
   useEffect(() => {
     if (!isElectron) return;
@@ -1036,8 +1044,19 @@ export function BrawlView({
         return;
       }
       const r = ev.data;
+      setDraftPresent(r.shop);
+      if (!r.shop || r.accepted) setItemReadStatus(null);
+      else if (r.itemReadStatus) setItemReadStatus(r.itemReadStatus);
+      else if (r.pendingTransition) setItemReadStatus(null);
       // Game evidence is independent of whether a tooltip currently hides the offered cards.
-      if (r.meta?.self && frameGate.acceptsContext(r)) {
+      const rosterSample =
+        r.metadataSample === undefined ? '' : `${r.captureEpoch ?? captureGenRef.current}:${r.metadataSample}`;
+      if (
+        r.meta?.self &&
+        (r.identityOnly || frameGate.acceptsContext(r)) &&
+        (!rosterSample || rosterSample !== lastRosterSampleRef.current)
+      ) {
+        lastRosterSampleRef.current = rosterSample;
         const memory = matchMemoryRef.current;
         const established = memory.enemies.length === ENEMY_SLOTS;
         const observed = memory.observeRoster(
@@ -1077,23 +1096,33 @@ export function BrawlView({
           log('brawl-view', 'info', 'match.confirmed', { self: r.meta.self, enemies: memory.enemies });
         }
       }
+      // This independently confirmed roster is usable even when item qualification is still pending.
+      if (r.teamRoster) {
+        teamRosterRef.current = r.teamRoster;
+        teamEdgeRef.current = teamWinRate(r.teamRoster, tierDataRef.current, heroes);
+      }
       // Team preparation continues after item advice closes. Only committed context may restart a
       // known later round; transient stale draft labels must not resurrect the first-round panel.
-      if (!r.shop || frameGate.acceptsContext(r)) {
+      {
         if (r.accepted && r.round === 1 && roundRef.current > 1 && r.transition === 'initial')
           preparationRef.current.reset();
         const open = preparationRef.current.observe(
           {
             shop: r.shop,
-            round: r.shop ? r.round : (r.preparationRound ?? r.round),
+            round: r.shop && r.key && frameGate.acceptsContext(r) ? r.round : (r.preparationRound ?? r.round),
             countdown: !!r.roundCountdown,
-            confirmedRound: r.shop && r.accepted,
+            confirmedRound: r.shop && r.accepted && frameGate.acceptsContext(r),
             sample: r.preparationSample,
           },
           performance.now(),
         );
         setPreparationOpen(open);
         pushOverlay();
+      }
+      if (r.identityOnly) {
+        // Keep manual hero overrides and item/session transitions independent of preparation evidence.
+        if (r.meta?.self && heroes.some((h) => h.id === r.meta!.self)) onHero(r.meta.self, 'detected');
+        return;
       }
       if (r.inventory !== null) {
         const before = ownedRef.current;
@@ -1120,10 +1149,6 @@ export function BrawlView({
         return;
       }
       if (!frameGate.publish(r, performance.now())) return;
-      if (r.teamRoster && r.shop) {
-        teamRosterRef.current = r.teamRoster;
-        teamEdgeRef.current = teamWinRate(r.teamRoster, tierDataRef.current, heroes);
-      }
       if (!r.shop) {
         // The item panel closes after the short screen debounce; the ability tip has its own longer debounce.
         prevCardsRef.current = cardsRef.current.length ? cardsRef.current : prevCardsRef.current;
@@ -1328,7 +1353,9 @@ export function BrawlView({
     if (status === 'Detecting…') return status;
     if (capture === 'starting') return 'Capture starting…';
     if (capture === 'on') {
+      if (draftPresent && itemReadStatus) return itemReadStatusText(itemReadStatus);
       if (draftOpen) return `Draft — round ${round}, choice ${choice}`;
+      if (draftPresent) return 'Draft — reading items…';
       return testMode.on ? 'Test mode on' : 'Capturing — no draft on screen';
     }
     if (testMode.on) return 'Test mode on';

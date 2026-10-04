@@ -25,6 +25,7 @@ const state = vi.hoisted(() => ({
   cards: [101, 102, 103],
   actualLabels: false,
   actualCards: false,
+  actualSelf: false,
   cardScore: 0.99,
   cardScores: [] as number[],
   visible: 3,
@@ -41,8 +42,9 @@ vi.mock('../recognise', async (original) => {
     decodeIconIndex: actual.decodeIconIndex,
     readRoundChoice: (img: import('../recognise').RGBImage) =>
       state.actualLabels ? actual.readRoundChoice(img) : { round: state.round, choice: state.choice },
-    readPlayerHero: () => {
+    readPlayerHero: (img: import('../recognise').RGBImage, index: import('../recognise').DecodedIndex) => {
       state.selfReader();
+      if (state.actualSelf) return actual.readPlayerHero(img, index);
       return state.self ? { heroId: state.self, side: state.selfSide, slot: state.selfSlot } : null;
     },
     readInventory: () => {
@@ -63,8 +65,9 @@ vi.mock('../recognise', async (original) => {
         match: { itemId, score: state.cardScores[slot] ?? state.cardScore, margin: 0.3 },
       })) as CardRead[];
     },
-    readDraftMeta: () => {
+    readDraftMeta: (...args: Parameters<typeof actual.readDraftMeta>) => {
       state.metadataReader();
+      if (state.actualSelf) return actual.readDraftMeta(...args);
       return {
         round: state.round,
         choice: state.choice,
@@ -81,7 +84,8 @@ vi.mock('../../local/cardNameOcr', async (original) => {
   return {
     ...actual,
     readItemName: (...args: Parameters<typeof actual.readItemName>) => {
-      state.nameReads();
+      const injected = state.nameReads(...args);
+      if (injected !== undefined) return injected;
       return state.actualNameOcr ? actual.readItemName(...args) : Promise.resolve({ text: '', confidence: 0 });
     },
   };
@@ -118,7 +122,17 @@ const frame = async (elapsed = 250) => {
     .filter((m): m is FrameResult => m.type === 'result')
     .at(-1)!;
 };
-const actualCardPixels = async (name: 'choice2' | 'choice3' | 'round2-choice3' | 'round4-choice3') => {
+const actualCardPixels = async (
+  name:
+    | 'choice2'
+    | 'choice3'
+    | 'round1-choice3'
+    | 'round2-choice2'
+    | 'round2-choice3'
+    | 'round3-choice2'
+    | 'round3-choice3'
+    | 'round4-choice3',
+) => {
   const spec = JSON.parse(readFileSync(`src/brawl/__tests__/assets/settled-${name}.json`, 'utf8')) as {
     width: number;
     height: number;
@@ -200,11 +214,12 @@ beforeEach(async () => {
   state.cards = [101, 102, 103];
   state.actualLabels = false;
   state.actualCards = false;
+  state.actualSelf = false;
   state.cardScore = 0.99;
   state.cardScores = [];
   state.visible = 3;
   state.actualNameOcr = false;
-  state.nameReads.mockClear();
+  state.nameReads.mockReset();
   state.inventoryReader.mockClear();
   state.cardReader.mockClear();
   state.metadataReader.mockClear();
@@ -240,6 +255,56 @@ afterEach(async () => {
 });
 
 describe('worker confirmed state', () => {
+  it('atomically retains exact corrected IDs after an initial name failure on identical pixels', async () => {
+    const wrong = itemByName('Extra Spirit').id;
+    const correct = itemByName('Quicksilver Reload').id;
+    state.cards = [itemByName('Swift Striker').id, wrong, itemByName('Spirit Shielding').id];
+    state.cardScores = [0.99, 0.6, 0.99];
+    state.nameReads
+      .mockResolvedValueOnce({ text: '', confidence: 0 })
+      .mockResolvedValue({ text: 'Quicksilver Reload', confidence: 95 });
+    expect(await frame()).toMatchObject({ accepted: false, key: '', reads: [] });
+    expect(await frame(1001)).toMatchObject({ accepted: false, key: '', reads: [] });
+    const committed = await accept();
+    expect(committed.key).toBe(`${state.cards[0]},${correct},${state.cards[2]}`);
+    expect(committed.reads[1]).toMatchObject({ itemId: correct, match: { itemId: correct, score: 0.6 } });
+    const anchor = { ...committed.reads[1]!.match };
+    expect(state.cardReader).toHaveBeenCalledTimes(1); // all retry frames reuse the original pixel anchor
+    expect(state.nameReads).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 3; i++) {
+      const next = await frame();
+      expect(next.key).toBe(committed.key);
+      expect(next.reads[1]!.match).toEqual(anchor);
+    }
+    expect(state.cardReader).toHaveBeenCalledTimes(1);
+    expect(state.nameReads).toHaveBeenCalledTimes(2);
+  });
+  it('confirms real Paige before a weak card can qualify, and publishes only player metadata', async () => {
+    state.actualLabels = state.actualCards = state.actualSelf = true;
+    state.actualNameOcr = false; // exact weak-slot text remains unavailable, so this offer cannot be accepted
+    await actualCardPixels('round2-choice2');
+    await frame(500);
+    expect(outputs.some((m) => m.type === 'result' && m.identityOnly)).toBe(false);
+    await frame(500);
+    const identities = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly);
+    expect(identities.at(-1)).toMatchObject({
+      accepted: false,
+      pending: true,
+      shop: true,
+      round: 2,
+      choice: 2,
+      key: '',
+      reads: [],
+      meta: { self: 67 },
+    });
+    expect(outputs.filter((m) => m.type === 'result' && m.accepted)).toEqual([]);
+    await frame(500);
+    const followup = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly).at(-1)!;
+    expect(followup.meta?.self).toBe(67);
+    expect(followup.metadataSample).toBeGreaterThan(identities.at(-1)!.metadataSample!);
+    expect(state.selfReader).toHaveBeenCalledTimes(2); // confirmed portraits use the normal slow follow-up cadence
+    expect(outputs.filter((m) => m.type === 'result' && m.accepted)).toEqual([]);
+  });
   it('rejects old capture frames and probes arriving after a new forced reset', async () => {
     await handle({ data: { type: 'reset', captureEpoch: 7 } } as MessageEvent<WorkerIn>);
     const before = outputs.length;
@@ -267,6 +332,11 @@ describe('worker confirmed state', () => {
   it('does not adopt the first wrong player read, then confirms fresh Graves without an offer change', async () => {
     state.self = 67;
     state.team = [67, 10, 11, 12];
+    await frame(); // one wrong portrait observation must not be adopted
+    expect(outputs.some((m) => m.type === 'result' && m.identityOnly)).toBe(false);
+    state.self = 76;
+    state.selfSlot = 2;
+    state.team = [10, 11, 76, 12];
     const first = await accept();
     expect(first.meta?.self).toBe(0);
     state.self = 76;
@@ -417,6 +487,81 @@ describe('worker confirmed state', () => {
     expect(final.meta?.rerollsRemaining).toBe(1);
     expect(state.nameReads).toHaveBeenCalledTimes(1);
   }, 20_000);
+  it('resolves the actual present but wrong Heroic Aura icon before committing R2C2, including after F8 reset', async () => {
+    state.round = 2;
+    state.choice = 2;
+    state.actualCards = true;
+    state.actualLabels = true;
+    state.actualNameOcr = true;
+    await actualCardPixels('round2-choice2');
+    expect(await frame()).toMatchObject({ accepted: false, pending: true, reads: [], key: '' });
+    // Force a raw reread while HUD pixels animate: the corrected tuple must keep its own stable anchor.
+    const header = regions.find((r) => r.y === 0)!;
+    const pixels = new Uint8Array(header.buffer);
+    for (let y = 0; y < 64; y++) pixels.fill(255, y * header.width * 4, (y * header.width + 64) * 4);
+    const final = await accept();
+    const expected = ['Heroic Aura', 'Headhunter', 'Spirit Snatch'].map((name) => itemByName(name).id);
+    expect(final.reads.map((r) => r.itemId)).toEqual(expected);
+    expect(final.reads[0]).toMatchObject({ enhanced: true, rare: false, present: true });
+    expect(final.reads[0]!.match.score).toBeLessThan(0.82);
+    expect(final.reads[0]!.match.margin).toBeLessThan(0.08);
+    expect(final).toMatchObject({ round: 2, choice: 2, transition: 'initial', accepted: true });
+    // F8 recaptures cannot revive the wrong raw ID or get stuck denying the same visible names.
+    await handle({ data: { type: 'reset' } } as MessageEvent<WorkerIn>);
+    await actualCardPixels('round2-choice2');
+    expect((await accept()).reads.map((r) => r.itemId)).toEqual(expected);
+  }, 20_000);
+  it('recovers the actual R3C2 thin glyphs with one exact grayscale retry, skipping its strong neighbors', async () => {
+    state.round = 3;
+    state.choice = 2;
+    state.actualCards = true;
+    state.actualLabels = true;
+    state.actualNameOcr = true;
+    await actualCardPixels('round3-choice2');
+    expect(await frame()).toMatchObject({ accepted: false, pending: true, reads: [], key: '' });
+    const final = await accept();
+    expect(final.reads.map((r) => r.itemId)).toEqual(
+      ['Spellslinger', 'Superior Duration', 'Burst Fire'].map((name) => itemByName(name).id),
+    );
+    expect(final.reads[0]).toMatchObject({ present: true, rare: true, enhanced: true });
+    expect(final.reads[0]!.match.score).toBeLessThan(0.82);
+    expect(final).toMatchObject({ round: 3, choice: 2, accepted: true, transition: 'initial' });
+    expect(state.nameReads).toHaveBeenCalledTimes(2);
+  }, 20_000);
+  it('confirms the actual R3C3 long tilted name above the strict confidence floor before offering advice', async () => {
+    state.round = 3;
+    state.choice = 3;
+    state.actualCards = true;
+    state.actualLabels = true;
+    state.actualNameOcr = true;
+    await actualCardPixels('round3-choice3');
+    expect(await frame()).toMatchObject({ accepted: false, pending: true, reads: [], key: '' });
+    const final = await accept();
+    expect(final.reads.map((r) => r.itemId)).toEqual(
+      ['Spiritual Overflow', 'Transcendent Cooldown', 'Echo Shard'].map((name) => itemByName(name).id),
+    );
+    expect(final.reads[1]).toMatchObject({ present: true, enhanced: true, rare: false });
+    expect(final.reads[1]!.match.score).toBeLessThan(0.82);
+    expect(final).toMatchObject({ round: 3, choice: 3, accepted: true, transition: 'initial' });
+    expect(state.nameReads).toHaveBeenCalledTimes(1);
+  }, 20_000);
+  it('keeps the full tilted Escalating Resilience label and confirms the actual R1C3 rare offer', async () => {
+    state.round = 1;
+    state.choice = 3;
+    state.actualCards = true;
+    state.actualLabels = true;
+    state.actualNameOcr = true;
+    await actualCardPixels('round1-choice3');
+    expect(await frame()).toMatchObject({ accepted: false, pending: true, reads: [], key: '' });
+    const final = await accept();
+    expect(final.reads.map((r) => r.itemId)).toEqual(
+      ['Metal Skin', 'Escalating Resilience', 'Cheat Death'].map((name) => itemByName(name).id),
+    );
+    expect(final.reads[1]!.match.score).toBeLessThan(0.82);
+    expect(final.reads[2]!.rare).toBe(true);
+    expect(final).toMatchObject({ round: 1, choice: 3, accepted: true, transition: 'initial' });
+    expect(state.nameReads).toHaveBeenCalledTimes(1);
+  }, 20_000);
   it('publishes no initial recommendation while any card is incomplete, then waits for the complete fresh tuple', async () => {
     state.visible = 2;
     for (let i = 0; i < 4; i++)
@@ -429,7 +574,7 @@ describe('worker confirmed state', () => {
   it('leaves weak new candidates pending unless exact text independently validates them', async () => {
     state.cardScores = [0.643, 0.522, 0.818];
     for (let i = 0; i < 5; i++) expect(await frame()).toMatchObject({ accepted: false, reads: [], key: '' });
-    expect(state.nameReads).toHaveBeenCalledTimes(6);
+    expect(state.nameReads).toHaveBeenCalledTimes(12); // Two bounded preprocessing attempts per weak slot.
     state.cardScores = [];
     rosterPixels(255);
     expect(await accept()).toMatchObject({ accepted: true, key: '101,102,103' });
@@ -441,6 +586,27 @@ describe('worker confirmed state', () => {
     state.cardScores = [];
     rosterPixels(0);
     expect(await accept()).toMatchObject({ accepted: true, transition: 'choice', key: '201,202,203' });
+  });
+  it('reports the unread slot without repeating completed OCR over forty unchanged frames, and F8 permits a fresh attempt', async () => {
+    state.cardScores = [0.99, 0.6, 0.99];
+    for (let i = 0; i < 40; i++) {
+      const result = await frame(1100);
+      expect(result).toMatchObject({
+        accepted: false,
+        reads: [],
+        key: '',
+        itemReadStatus: { confirmed: 2, phase: 'unknown', unresolved: [1] },
+      });
+    }
+    // The first observation establishes a visual epoch; each epoch gets one two-pass ladder.
+    expect(state.nameReads).toHaveBeenCalledTimes(4);
+    const before = state.nameReads.mock.calls.length;
+    await handle({ data: { type: 'reset' } } as MessageEvent<WorkerIn>);
+    await frame();
+    expect(state.nameReads.mock.calls.length).toBeGreaterThan(before);
+    state.cardScores = [];
+    cardPixels(80); // A newly clear icon is a changed picture, not a different score on identical pixels.
+    expect(await accept()).toMatchObject({ accepted: true, key: '101,102,103' });
   });
   it('waits for complete stable pixels, then corrects real C2/C3 screen cards after old same-ID label animation beyond the correction window', async () => {
     state.actualCards = true;
@@ -499,6 +665,24 @@ describe('worker confirmed state', () => {
       expect(outputs.at(-1)?.type).toBe('result');
     }
     expect(state.cardReader).toHaveBeenCalledTimes(1);
+  });
+  it('publishes the actual first-round partial roster while every item remains blocked and keeps retrying the unread portrait', async () => {
+    state.actualSelf = true;
+    state.actualLabels = true;
+    state.round = 1;
+    state.choice = 3;
+    state.cardScore = 0.5;
+    await actualCardPixels('round1-choice3');
+    for (let i = 0; i < 4; i++)
+      expect(await frame(500)).toMatchObject({ accepted: false, pending: true, reads: [], key: '' });
+    const identities = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly);
+    expect(identities.at(-1)?.teamRoster).toEqual({ self: 76, left: [76, 65, 67, 0], right: [79, 27, 84, 1] });
+    const readsBefore = state.metadataReader.mock.calls.length;
+    await frame(2000);
+    expect(state.metadataReader.mock.calls.length).toBeGreaterThan(readsBefore);
+    expect(
+      outputs.filter((m): m is FrameResult => m.type === 'result').every((r) => !r.accepted && !r.reads.length),
+    ).toBe(true);
   });
   it('publishes the full team only after two independent portrait reads and caches it through tooltip corruption', async () => {
     state.round = 1;
@@ -599,6 +783,88 @@ describe('worker confirmed state', () => {
     expect(ended.reads).toEqual([]);
     expect(ended.meta).toBeNull();
     expect(state.cardReader).toHaveBeenCalledTimes(before);
+  });
+  it('preserves nonshop side-correction provenance through unread opponents and updates retained metadata', async () => {
+    state.round = 1;
+    state.self = 67;
+    state.team = [67, 10, 11, 12];
+    await accept();
+    await frame(500);
+    const memory = new MatchMemory();
+    memory.observeRoster(67, state.foes, 1);
+    memory.observeRoster(67, state.foes, 1);
+    memory.observeInventory(state.inventory, items, 10);
+    const acquired = [...memory.acquisitions];
+    const caption = await sharp('src/local/__tests__/assets/round-countdown.png').ensureAlpha().raw().toBuffer();
+    regions.push({ x: frameWidth - 439, y: 365, width: 420, height: 70, buffer: Uint8Array.from(caption).buffer });
+    state.choice = 0;
+    state.self = 76;
+    state.selfSide = 'right';
+    state.selfSlot = 2;
+    state.foes = [2, 3, 76, 5];
+    state.team = [67, 10, 11, 0];
+    await frame(5000);
+    await frame(500);
+    let correction = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly).at(-1)!;
+    expect(correction).toMatchObject({ shop: false, transition: 'hero', meta: { self: 76 } });
+    expect(memory.observeRoster(76, state.team, 1, correction.transition === 'hero').newMatch).toBe(false);
+    state.team = [67, 10, 11, 12];
+    await frame(500);
+    correction = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly).at(-1)!;
+    expect(correction).toMatchObject({ transition: 'hero', meta: { self: 76 } });
+    expect(memory.observeRoster(76, state.team, 1, correction.transition === 'hero').newMatch).toBe(false);
+    expect(memory.owned).toEqual(state.inventory);
+    expect(memory.acquisitions).toEqual(acquired);
+    // Any retained metadata must carry the corrected self, never the previous interpretation.
+    const next = await frame(500);
+    if (next.meta) expect(next.meta.self).toBe(76);
+    state.choice = 2;
+    expect((await accept()).meta?.self).toBe(76);
+  });
+  it('reacquires player and partial team after F8 on actual first preparation without reading any item cards', async () => {
+    await actualCardPixels('round1-choice3');
+    regions = regions.filter((r) => r.y === 0);
+    const file = 'src/local/__tests__/assets/round-countdown-draft-choice3';
+    const origin = JSON.parse(readFileSync(`${file}.json`, 'utf8'));
+    const { data, info } = await sharp(`${file}.png`).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    regions.push({
+      x: origin.x,
+      y: origin.y,
+      width: info.width,
+      height: info.height,
+      buffer: Uint8Array.from(data).buffer,
+    });
+    state.actualSelf = true;
+    state.actualLabels = true;
+    await handle({ data: { type: 'reset' } } as MessageEvent<WorkerIn>);
+    for (let i = 0; i < 4; i++)
+      expect(await frame(500)).toMatchObject({
+        shop: false,
+        preparationRound: 1,
+        roundCountdown: true,
+        reads: [],
+        key: '',
+      });
+    const identity = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly).at(-1)!;
+    expect(identity).toMatchObject({
+      shop: false,
+      accepted: false,
+      meta: { self: 76 },
+      teamRoster: { self: 76, left: [76, 65, 67, 0], right: [79, 27, 84, 1] },
+    });
+    expect(state.cardReader).not.toHaveBeenCalled();
+    expect(state.nameReads).not.toHaveBeenCalled();
+    // A later-round caption cannot acquire a first-preparation roster, even after a raw ROUND1 glitch.
+    await handle({ data: { type: 'reset' } } as MessageEvent<WorkerIn>);
+    state.actualLabels = false;
+    state.round = 2;
+    state.choice = 0;
+    state.selfReader.mockClear();
+    await frame(500);
+    await frame(500);
+    state.round = 1;
+    await frame(500);
+    expect(state.selfReader).not.toHaveBeenCalled();
   });
   it('reads real first-round preparation regions after picks, keeps full cheap cue polling, and returns to probes on gameplay', async () => {
     state.round = 1;
