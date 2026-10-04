@@ -1,3 +1,4 @@
+import { DraftFrameGate } from '../local/draftFrameGate';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
 import { createPortal } from 'react-dom';
@@ -81,7 +82,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const [error, setError] = useState<string | null>(null);
   const [round, setRound] = usePersisted('round', isNumber, 1);
   const [choice, setChoice] = useState(1);
-  const [rerollsLeft, setRerollsLeft] = useState<number | null>(null); // null: however many the round starts with; set from the on-screen "N Re-Roll Remaining" caption once a frame is read
+  const [rerollsLeft, setRerollsLeft] = useState<number | null>(null); // null: unread, conservatively treated as zero
   const isEnemies = (v: unknown): v is number[] => isNumberArray(v) && v.length === ENEMY_SLOTS;
   const [enemies, setEnemies] = usePersisted('enemies', isEnemies, Array(ENEMY_SLOTS).fill(0));
   const [owned, setOwned] = useState<number[]>([]);
@@ -126,6 +127,9 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   const makeWorker = async (): Promise<Worker | null> => {
     if (workerRef.current) return workerRef.current;
     workerIndexRef.current ??= await j<IconIndex>('brawl-icons.json');
+    workerIndexRef.current.names ??= Object.fromEntries(
+      items.filter((i) => !i.disabled && i.item_tier >= 1).map((i) => [i.id, i.name]),
+    );
     if (workerRef.current) return workerRef.current;
     const w = new Worker(new URL('../brawl/worker.ts', import.meta.url), { type: 'module' });
     w.postMessage({ type: 'warm', index: workerIndexRef.current, tiers: workerTiers() } satisfies WorkerIn);
@@ -201,7 +205,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
   }, [hero.id]);
   // tagged with the hero it was fetched for, so switching hero shows the loader again instead of the old hero's numbers
   const analytics = loaded?.heroId === hero.id ? loaded.analytics : null;
-  const rerolls = rerollsLeft ?? config?.item_draft_rerolls_per_round[round - 1] ?? 1;
+  const rerolls = rerollsLeft ?? 0;
 
   const input: BrawlInput | null = useMemo(
     () => (analytics && config ? { hero, abilities, items, analytics, config } : null),
@@ -278,6 +282,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     overlayAdviceRef.current = input
       ? {
           hero: hero.name,
+          rerollsRemaining: rerollsLeft,
           round,
           choice,
           reroll: reroll ? { expectedBest: reroll.expectedBest, currentBest: reroll.currentBest } : null,
@@ -298,7 +303,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     tipRef.current = tip;
     pushOverlay();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pushOverlay only reads refs
-  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById]);
+  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById, rerollsLeft]);
 
   /** Ends a Detect now try and logs `detect.manual` with the outcome. */
   function finishDetect(outcome: 'hit' | 'miss' | 'failed') {
@@ -323,6 +328,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
     cardsRef.current = [];
     prevCardsRef.current = [];
     acceptedKeyRef.current = '';
+    setRerollsLeft(null);
     unreadFramesRef.current = 0;
     lastReadSigRef.current = '';
     setCards([]);
@@ -654,6 +660,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         }
       },
     };
+    const frameGate = new DraftFrameGate();
     let vfcId = 0;
     if (vid && frames.supported) {
       const loop = () => {
@@ -808,12 +815,37 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         // OCR runs off the hot path (see worker.ts); only apply it if the card set it was read for is
         // still the one on screen -- otherwise a slow OCR result from a since-superseded set would
         // overwrite a newer, already-correct count (or the next set's still-pending "-1 unread").
-        const applied = ev.data.forKey === acceptedKeyRef.current;
+        const applied =
+          ev.data.forKey === acceptedKeyRef.current &&
+          ev.data.forChoice === choiceRef.current &&
+          (ev.data.forRound === 0 || ev.data.forRound === roundRef.current);
         log('brawl-view', 'info', 'rerolls.read', { value: ev.data.rerollsRemaining, applied });
-        if (applied && ev.data.rerollsRemaining >= 0) setRerollsLeft(ev.data.rerollsRemaining);
+        if (applied) {
+          if (ev.data.spent) {
+            frameGate.invalidate();
+            acceptedKeyRef.current = '';
+            prevCardsRef.current = cardsRef.current;
+            cardsRef.current = [];
+            rankedRef.current = [];
+            overlayAdviceRef.current = null;
+            setCards([]);
+          }
+          setRerollsLeft(ev.data.rerollsRemaining >= 0 ? ev.data.rerollsRemaining : null);
+          if (overlayAdviceRef.current)
+            overlayAdviceRef.current = {
+              ...overlayAdviceRef.current,
+              rerollsRemaining: ev.data.rerollsRemaining >= 0 ? ev.data.rerollsRemaining : null,
+            };
+          if (ev.data.rerollsRemaining <= 0) {
+            rerollRef.current = null;
+            if (overlayAdviceRef.current) overlayAdviceRef.current = { ...overlayAdviceRef.current, reroll: null };
+          }
+          pushOverlay();
+        }
         return;
       }
       const r = ev.data;
+      if (!frameGate.publish(r, performance.now())) return;
       if (perf.enabled) {
         perf.record(r.shop ? 'worker.draft' : 'worker.probe', r.ms);
         for (const [k, v] of Object.entries(r.stages ?? {})) perf.record(`worker.${k}`, v);
@@ -853,7 +885,7 @@ export function BrawlView({ hero, heroes, items, abilities, onHero, debug = fals
         // no glyph at all (confidently zero); -1 means a glyph is showing and the real OCR read (see
         // ocr.ts's readRerollsRemaining) is still pending -- leave the current value alone until the
         // worker's follow-up 'rerolls' message resolves it, rather than overwrite a real count with "unread".
-        if (meta.rerollsRemaining >= 0) setRerollsLeft(meta.rerollsRemaining);
+        setRerollsLeft(meta.rerollsRemaining >= 0 ? meta.rerollsRemaining : null);
         // the square-topped portrait is the player's: switch the app's hero to it (the enemies are then the other side)
         if (!meta.self) {
           log('brawl-view', 'debug', 'hero.detect.miss', { bar: meta.bar });

@@ -18,7 +18,10 @@ process.env.BRAWL_E2E = '1';
 const path = require('node:path');
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
-const { app } = require('electron');
+const { app, protocol } = require('electron');
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'brawl-data', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,AllowWgcWindowCapturer');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 

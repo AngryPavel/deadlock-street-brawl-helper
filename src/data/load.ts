@@ -1,6 +1,7 @@
+import type { BrawlApi } from '../../electron/preload';
 import type { Ability, Hero, Item } from '../types';
 
-const base = `${(import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}data/`;
+let base = `${(import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/'}data/`;
 export async function j<T>(rel: string): Promise<T> {
   const r = await fetch(base + rel);
   if (!r.ok) throw new Error(`Missing snapshot ${rel} – run \`npm run fetch-data\``);
@@ -11,15 +12,27 @@ export interface Manifest {
   fetched_at: string;
   window_days: number;
   counts: Record<string, number>;
-  brawl?: { fetched_at: string; window_days: number };
+  brawl?: {
+    fetched_at: string;
+    window_days: number;
+    since_patch?: string;
+    min_unix_timestamp?: number;
+    max_match_id?: number;
+  };
 }
-export const loadCore = () =>
-  Promise.all([
+export async function configureDataBase() {
+  const api = (window as Window & { brawlAPI?: BrawlApi }).brawlAPI;
+  if (api?.getDataStatus) base = (await api.getDataStatus(false)).baseUrl;
+}
+export const loadCore = async () => {
+  if (typeof window !== 'undefined') await configureDataBase();
+  return Promise.all([
     j<Item[]>('items.json'),
     j<Hero[]>('heroes.json'),
     j<Ability[]>('abilities.json'),
     j<Manifest>('manifest.json'),
   ]);
+};
 
 /** Image fields in the snapshot are app-relative (img/...) after fetch-data; absolute URLs pass through. */
 export const img = (p?: string) => (!p ? undefined : /^https?:/.test(p) ? p : base + p);

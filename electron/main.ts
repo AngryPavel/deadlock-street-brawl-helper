@@ -25,6 +25,7 @@ import {
 } from './gameWindow';
 import { probeShopScreen } from './shopProbe';
 import { CHANNELS } from './channels';
+import { setupDataUpdates } from './update/integration';
 import { MIN_HEIGHT, MIN_WIDTH, isBounds, validBounds } from './windowBounds';
 import { overlayHasContent } from '../src/brawl/overlayContent';
 import { dotState, initialLobby, lobbyDotVisible, stepLobby, type DotState } from '../src/brawl/lobbyDot';
@@ -746,6 +747,11 @@ function platformWarning(): string | null {
 }
 
 function setupIpc() {
+  ipcMain.handle(CHANNELS.dataActivate, (event) => {
+    if (!alive(control) || event.sender !== control.webContents)
+      throw new Error('Only the control window may apply data.');
+    if (alive(overlay)) overlay.webContents.send(CHANNELS.dataActivated);
+  });
   ipcMain.handle(CHANNELS.getGameRect, () => lastRect);
   ipcMain.handle(CHANNELS.captureStateGet, () => captureState());
   ipcMain.on(CHANNELS.captureIdle, () => {
@@ -844,7 +850,10 @@ if (process.env.BRAWL_E2E && !app.isReady()) app.disableHardwareAcceleration();
 // when this module loads) pass the same switch themselves; keep the two in sync (scripts/win/*-main.cjs).
 if (!app.isReady()) app.commandLine.appendSwitch('disable-features', 'AllowWgcWindowCapturer');
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await setupDataUpdates(path.join(__dirname, DEV_SERVER_URL ? '../public/data' : '../dist/data'), () =>
+    alive(control) ? control.webContents : null,
+  );
   setupDisplayMediaHandler();
   setupIpc();
   createControlWindow();

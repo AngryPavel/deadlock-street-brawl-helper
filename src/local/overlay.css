@@ -1,0 +1,17 @@
+/* Local overlay preferences; imported after upstream styles. 50% transparent = opacity 0.50. */
+.ap.overlay-ap {
+  --u: clamp(0.48px, 0.05vh, 0.65px);
+  left: 16px;
+  right: auto;
+  top: auto;
+  bottom: 16px;
+  transform: none;
+  margin: 0;
+  opacity: 0.5;
+}
+
+.local-reroll-counter {
+  margin: 2px 0 6px;
+  font-size: 0.9em;
+  color: #bfe8ed;
+}

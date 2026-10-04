@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { Rect } from './gameWindow';
 import type { OverlayState } from '../src/brawl/draw';
 import { CHANNELS } from './channels';
+import type { DataStatus, UpdateProgress, UpdateRequest } from '../src/data/updateTypes';
 
 export interface TestModeState {
   on: boolean;
@@ -16,6 +17,25 @@ export interface CaptureState {
 }
 
 const api = {
+  getDataStatus: (check = false): Promise<DataStatus> => ipcRenderer.invoke(CHANNELS.dataStatus, check),
+  getDataProgress: (): Promise<UpdateProgress> => ipcRenderer.invoke(CHANNELS.dataProgressGet),
+  startDataUpdate: (request: UpdateRequest): Promise<UpdateProgress> => ipcRenderer.invoke(CHANNELS.dataStart, request),
+  cancelDataUpdate: (): Promise<UpdateProgress> => ipcRenderer.invoke(CHANNELS.dataCancel),
+  activateDataSnapshot: (): Promise<void> => ipcRenderer.invoke(CHANNELS.dataActivate),
+  onDataActivated: (cb: () => void) => {
+    const listener = () => cb();
+    ipcRenderer.on(CHANNELS.dataActivated, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.dataActivated, listener);
+    };
+  },
+  onDataProgress: (cb: (progress: UpdateProgress) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, p: UpdateProgress) => cb(p);
+    ipcRenderer.on(CHANNELS.dataProgress, listener);
+    return () => {
+      ipcRenderer.removeListener(CHANNELS.dataProgress, listener);
+    };
+  },
   isElectron: true as const,
   isE2E: process.env.BRAWL_E2E === '1',
   // e2e only: shortens the ability tip so a full harness run fits its time budget (the real default is 15 s).

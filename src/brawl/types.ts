@@ -104,4 +104,5 @@ export interface IconIndex {
   extras?: [number, string][]; // extra in-game reference icons: [item id, base64]
   twins?: Record<string, number[]>;
   heroes?: Record<string, string>;
+  names?: Record<string, string>; // local text-recognition fallback; id -> English item name
 } // twins: items whose icon file is identical; heroes: card-art portraits

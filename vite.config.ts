@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => ({
       electron([
         {
           entry: 'electron/main.ts',
-          vite: { build: { outDir: 'electron-dist', rollupOptions: { external: ['koffi'] } } },
+          vite: { build: { outDir: 'electron-dist', rollupOptions: { external: ['koffi', 'sharp'] } } },
         },
         {
           entry: 'electron/preload.ts',

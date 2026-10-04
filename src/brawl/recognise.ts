@@ -1,7 +1,10 @@
 // Street Brawl draft-screen recogniser: pure pixel code, no DOM and no Node APIs, so the same function runs
 // in the browser (canvas) and in the fixture test (sharp). Layout constants are fractions of a 2560x1440
-// screen and were measured from the user's screenshots; a different resolution scales linearly.
+// HUD and were measured from screenshots; wider screens keep this HUD centred at the same height scale.
 import type { IconIndex } from './types';
+import { cardNameRegions } from '../local/cardNames';
+import { hudLayout } from '../local/hudLayout';
+export { hudLayout } from '../local/hudLayout';
 
 export interface RGBImage {
   width: number;
@@ -28,9 +31,13 @@ export const BRAWL_LAYOUT = {
 
 /** Card centres for an arbitrary screen size. */
 export const cardAnchors = (width: number, height: number) => {
-  const sx = width / BRAWL_LAYOUT.ref.width,
-    sy = height / BRAWL_LAYOUT.ref.height;
-  return BRAWL_LAYOUT.cards.map((c) => ({ name: c.name, cx: c.cx * sx, cy: c.cy * sy, icon: BRAWL_LAYOUT.icon * sx }));
+  const { sx, sy, offsetX } = hudLayout(width, height);
+  return BRAWL_LAYOUT.cards.map((c) => ({
+    name: c.name,
+    cx: offsetX + c.cx * sx,
+    cy: c.cy * sy,
+    icon: BRAWL_LAYOUT.icon * sx,
+  }));
 };
 
 /** The "Use Re-Roll" pill on the draft screen, measured at 2560x1440 from the user's screenshots
@@ -39,12 +46,11 @@ const REROLL_BUTTON = { x0: 1140, y0: 913, x1: 1420, y1: 996 } as const;
 
 /** Re-roll button rect for an arbitrary screen size. */
 export const rerollButtonRect = (width: number, height: number) => {
-  const sx = width / BRAWL_LAYOUT.ref.width,
-    sy = height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(width, height);
   return {
-    x0: REROLL_BUTTON.x0 * sx,
+    x0: offsetX + REROLL_BUTTON.x0 * sx,
     y0: REROLL_BUTTON.y0 * sy,
-    x1: REROLL_BUTTON.x1 * sx,
+    x1: offsetX + REROLL_BUTTON.x1 * sx,
     y1: REROLL_BUTTON.y1 * sy,
   };
 };
@@ -570,8 +576,8 @@ function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: number, d
   for (const v of mask) n += v;
   let best: HeroMatch = { heroId: 0, score: -1, margin: 0 },
     second = -1;
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    step = Math.max(2, Math.round(HERO_BAR.step * sx)),
+  const { sx } = hudLayout(img.width, img.height);
+  const step = Math.max(2, Math.round(HERO_BAR.step * sx)),
     search = HERO_BAR.search * sx;
   // coarse pass from five windows (centre and the four corners of the search range): portraits shift a little between screens
   const pool = new Set<number>();
@@ -613,10 +619,9 @@ function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: number, d
 
 /** Reads the eight portraits; heroId is 0 for a slot that could not be read. */
 function readHeroBar(img: RGBImage, index: DecodedIndex): HeroBar {
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
   const read = (xs: readonly number[]) =>
-    xs.map((x) => matchHero(img, index, x * sx, HERO_BAR.cy * sy, HERO_BAR.diameter * sx));
+    xs.map((x) => matchHero(img, index, offsetX + x * sx, HERO_BAR.cy * sy, HERO_BAR.diameter * sx));
   return { left: read(HERO_BAR.left), right: read(HERO_BAR.right) };
 }
 
@@ -624,13 +629,12 @@ function readHeroBar(img: RGBImage, index: DecodedIndex): HeroBar {
 function readLeanBar(img: RGBImage, index: DecodedIndex, slot: { left: number; right: number }): HeroBar {
   const ownSide = slot.left >= 0 ? 'left' : slot.right >= 0 ? 'right' : null;
   if (!ownSide) return readHeroBar(img, index);
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
   const read = (side: 'left' | 'right') =>
     HERO_BAR[side].map((x, i): HeroMatch =>
       side === ownSide && i !== slot[side]
         ? { heroId: 0, score: 0, margin: 0 }
-        : matchHero(img, index, x * sx, HERO_BAR.cy * sy, HERO_BAR.diameter * sx),
+        : matchHero(img, index, offsetX + x * sx, HERO_BAR.cy * sy, HERO_BAR.diameter * sx),
     );
   return { left: read('left'), right: read('right') };
 }
@@ -667,8 +671,7 @@ function meanRect(img: RGBImage, x0: number, y0: number, x1: number, y1: number)
 
 /** Index (0..3) of the player's slot on each side, or -1. */
 function readSelfSlot(img: RGBImage): { left: number; right: number } {
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
   const cy = HERO_BAR.cy * sy,
     R = (HERO_BAR.diameter * sx) / 2;
   const y0 = Math.round(cy - 0.9 * R),
@@ -701,7 +704,7 @@ function readSelfSlot(img: RGBImage): { left: number; right: number } {
     }
     return best;
   };
-  const scores = [...HERO_BAR.left, ...HERO_BAR.right].map((x) => tile(x * sx));
+  const scores = [...HERO_BAR.left, ...HERO_BAR.right].map((x) => tile(offsetX + x * sx));
   const tiles = scores.filter((v) => v > 0).length;
   const order = scores.map((_, i) => i).sort((p, q) => scores[q] - scores[p]);
   const ok =
@@ -953,14 +956,13 @@ const readDigit = (
   /** Accept a blurrier glyph (max distance, and how many times closer than the runner-up it must be). */
   loose: { maxDistance: number; ratio: number } = { maxDistance: LOOSE_DIGIT_DISTANCE, ratio: 2 },
 ): number => {
-  const sx = (img.origin?.fullWidth ?? img.width) / BRAWL_LAYOUT.ref.width,
-    sy = (img.origin?.fullHeight ?? img.height) / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(img.origin?.fullWidth ?? img.width, img.origin?.fullHeight ?? img.height);
   const at = (minCol: number) =>
     readGlyph(
       img,
-      Math.round(box.x0 * sx),
+      Math.round(offsetX + box.x0 * sx),
       Math.round(box.y0 * sy),
-      Math.round(box.x1 * sx),
+      Math.round(offsetX + box.x1 * sx),
       Math.round(box.y1 * sy),
       test,
       minCol,
@@ -1002,11 +1004,10 @@ const matchDigit = (
  *  the rest of this file. */
 export function extractRerollLabelCrop(img: RGBImage): { data: Uint8Array; width: number; height: number } | null {
   const box = LABELS.rerolls;
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height;
-  const x1 = Math.round(box.x1 * sx),
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
+  const x1 = Math.round(offsetX + box.x1 * sx),
     y1 = Math.round(box.y1 * sy);
-  let x0 = Math.round(box.x0 * sx),
+  let x0 = Math.round(offsetX + box.x0 * sx),
     y0 = Math.round(box.y0 * sy);
   // minWidth 2: a soft, dim "1" is only ~3 px wide once the window has been scaled up.
   const bb = readGlyphBBox(img, x0, y0, x1, y1, mutedText, 2);
@@ -1052,13 +1053,12 @@ export function extractRerollLabelCrop(img: RGBImage): { data: Uint8Array; width
  *  for when OCR cannot read that dim, soft digit. The OCR result wins whenever it produces a digit. */
 export function rerollGlyphIsOne(img: RGBImage): boolean {
   const box = LABELS.rerolls;
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
   const bb = readGlyphBBox(
     img,
-    Math.round(box.x0 * sx),
+    Math.round(offsetX + box.x0 * sx),
     Math.round(box.y0 * sy),
-    Math.round(box.x1 * sx),
+    Math.round(offsetX + box.x1 * sx),
     Math.round(box.y1 * sy),
     mutedText,
     2,
@@ -1112,15 +1112,14 @@ export function isShopScreen(img: RGBImage): boolean {
 /** The part of a `width`x`height` frame `isShopScreen` reads (the "CHOICE n OF 3" digit plus slack), in frame
  *  px. Idle polling copies only this crop out of the video instead of the whole frame. */
 export function shopProbeRect(width: number, height: number) {
-  const sx = width / BRAWL_LAYOUT.ref.width,
-    sy = height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(width, height);
   const b = LABELS.choice;
-  const x = Math.max(0, Math.floor(b.x0 * sx) - 4),
+  const x = Math.max(0, Math.floor(offsetX + b.x0 * sx) - 4),
     y = Math.max(0, Math.floor(b.y0 * sy) - 4);
   return {
     x,
     y,
-    width: Math.min(width, Math.ceil(b.x1 * sx) + 4) - x,
+    width: Math.min(width, Math.ceil(offsetX + b.x1 * sx) + 4) - x,
     height: Math.min(height, Math.ceil(b.y1 * sy) + 4) - y,
   };
 }
@@ -1137,8 +1136,7 @@ export interface Region {
   height: number;
 }
 export function draftRegions(width: number, height: number): Region[] {
-  const sx = width / BRAWL_LAYOUT.ref.width,
-    sy = height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(width, height);
   const boxes: [number, number, number, number][] = [];
   const cardHalf = (BRAWL_LAYOUT.icon * 1.1) / 2 + BRAWL_LAYOUT.search + 20;
   // Extra room below the icon: the ENHANCED box (readMarkers) sits ~85-122 icon-units under it, past a square crop.
@@ -1159,16 +1157,19 @@ export function draftRegions(width: number, height: number): Region[] {
       inv.x0 + (inv.cols - 1) * inv.pitch + inv.icon + inv.search + pad,
       inv.y0 + (inv.rows - 1) * inv.pitch + inv.icon + inv.search + pad,
     ]);
-  return boxes.map(([x0, y0, x1, y1]) => {
-    const x = Math.max(0, Math.floor(x0 * sx)),
-      y = Math.max(0, Math.floor(y0 * sy));
-    return {
-      x,
-      y,
-      width: Math.min(width, Math.ceil(x1 * sx)) - x,
-      height: Math.min(height, Math.ceil(y1 * sy)) - y,
-    };
-  });
+  return [
+    ...boxes.map(([x0, y0, x1, y1]) => {
+      const x = Math.max(0, Math.floor(offsetX + x0 * sx)),
+        y = Math.max(0, Math.floor(y0 * sy));
+      return {
+        x,
+        y,
+        width: Math.min(width, Math.ceil(offsetX + x1 * sx)) - x,
+        height: Math.min(height, Math.ceil(y1 * sy)) - y,
+      };
+    }),
+    ...cardNameRegions(width, height, cardAnchors(width, height)),
+  ];
 }
 
 /** Round (0 when unread) and choice (0 when unread) labels of the draft screen: two glyph reads, cheap enough
@@ -1242,14 +1243,13 @@ function readInventoryAt(
     scales: readonly number[];
   },
 ): InventoryRead[] {
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height;
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
   const out: InventoryRead[] = [];
   const pref = new Set(prefer);
   for (let r = 0; r < INVENTORY.rows; r++)
     for (let c = 0; c < INVENTORY.cols; c++) {
       const edge = INVENTORY.icon * sx;
-      const cx = (INVENTORY.x0 + c * INVENTORY.pitch) * sx + edge / 2,
+      const cx = offsetX + (INVENTORY.x0 + c * INVENTORY.pitch) * sx + edge / 2,
         cy = (INVENTORY.y0 + r * INVENTORY.pitch) * sy + edge / 2;
       // an empty slot is a flat tinted square: skip it on contrast before matching
       const raw = sampleSquare(img, cx - edge / 2, cy - edge / 2, edge, index.size);
@@ -1298,6 +1298,7 @@ export function findRerollButton(
   ox: number,
   oy: number,
   frameW: number,
+  frameH = (frameW * BRAWL_LAYOUT.ref.height) / BRAWL_LAYOUT.ref.width,
 ): { x0: number; y0: number; x1: number; y1: number } | null {
   const lum = new Float32Array(w * h);
   for (let i = 0; i < w * h; i++) lum[i] = 0.3 * rgba[i * 4]! + 0.59 * rgba[i * 4 + 1]! + 0.11 * rgba[i * 4 + 2]!;
@@ -1309,7 +1310,7 @@ export function findRerollButton(
     const med = [...buf].sort((a, b) => a - b)[w >> 2]!;
     for (let x = 0; x < w; x++) light[y * w + x] = lum[y * w + x]! > med + 20 ? 1 : 0;
   }
-  const scale = frameW / BRAWL_LAYOUT.ref.width;
+  const scale = hudLayout(frameW, frameH).sx;
   const minRun = 90 * scale;
   const longest = (y: number) => {
     let best = 0,

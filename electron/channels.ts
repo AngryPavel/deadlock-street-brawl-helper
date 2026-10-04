@@ -1,5 +1,12 @@
 // IPC channel names shared by main and preload, so a typo in one shows up at compile time in both.
 export const CHANNELS = {
+  dataStatus: 'data-status',
+  dataProgressGet: 'data-progress-get',
+  dataProgress: 'data-progress',
+  dataStart: 'data-start',
+  dataCancel: 'data-cancel',
+  dataActivate: 'data-activate',
+  dataActivated: 'data-activated',
   getGameRect: 'get-game-rect',
   gameRect: 'game-rect',
   overlayState: 'overlay-state',

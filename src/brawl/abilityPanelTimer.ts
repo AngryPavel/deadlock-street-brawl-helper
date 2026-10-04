@@ -1,8 +1,9 @@
-// The "upgrade this ability" tip: appears when the item draft screen closes, lasts ~15 s, then goes away for good
+// The "upgrade this ability" tip: appears when the item draft screen closes, lasts TIP_MS, then goes away for good
 // until the next draft closes. Pure state machine (time is passed in) so it is unit-testable without a clock.
 
 /** How long the tip stays up. */
-export const TIP_MS = 15_000;
+export { ABILITY_TIP_MS as TIP_MS } from '../local/preferences';
+import { ABILITY_TIP_MS as TIP_MS } from '../local/preferences';
 /** Consecutive non-draft frames before the draft counts as closed (the screen can blink between choices). */
 export const CLOSE_FRAMES = 6;
 

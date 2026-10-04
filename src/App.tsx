@@ -4,6 +4,7 @@ import { img, loadCore, type Manifest } from './data/load';
 import { BrawlView } from './components/BrawlView';
 import { TierList } from './components/TierList';
 import { TitleBar } from './components/TitleBar';
+import { DataUpdates } from './components/DataUpdates';
 import { usePersisted, isNumber, isString } from './hooks/usePersisted';
 
 const INFERNUS = 1;
@@ -24,7 +25,19 @@ export default function App() {
   const [tab, setTab] = usePersisted<Tab>('tab', isTab, 'advisor');
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState(false); // hidden Debug panel; never persisted
-  const [now] = useState(Date.now);
+  const [now, setNow] = useState(Date.now);
+  const [dataRevision, setDataRevision] = useState(0);
+  const applyData = async () => {
+    const [i, h, a, m] = await loadCore();
+    setItems(i);
+    setHeroes(h);
+    setAbilities(a);
+    setManifest(m);
+    setNow(Date.now());
+    if (!h.some((hero) => hero.id === heroId)) setHeroId(h[0].id);
+    setDataRevision((n) => n + 1);
+    await window.brawlAPI?.activateDataSnapshot();
+  };
   const [changeHero, setChangeHero] = useState(false);
   const [heroSource, setHeroSource] = useState<'detected' | 'manual'>('manual');
   const handleHero = (id: number, source: 'detected' | 'manual' = 'manual') => {
@@ -116,7 +129,10 @@ export default function App() {
             )
           ) : (
             <div className="sub">
-              Heroes and items graded by win rate and usage, data from the 30 days to {fetchedDate}
+              Heroes and items graded by win rate and usage, data{' '}
+              {manifest?.brawl?.since_patch
+                ? `since patch ${manifest.brawl.since_patch.slice(0, 10)} to ${fetchedDate}`
+                : `from the ${manifest?.brawl?.window_days ?? 30} days to ${fetchedDate}`}
               {ageDays !== null && (
                 <span className={stale ? 'stale' : ''}>
                   {' '}
@@ -127,6 +143,7 @@ export default function App() {
           )}
         </div>
       </header>
+      <DataUpdates manifest={manifest} onApply={applyData} />
       <nav className="tabs" role="tablist" aria-label="View">
         {TABS.map((t) => (
           <button
@@ -142,9 +159,17 @@ export default function App() {
       </nav>
       {/* BrawlView stays mounted on both tabs: it owns the capture loop and the hidden <video>. */}
       <div hidden={tab !== 'advisor'}>
-        <BrawlView hero={hero} heroes={heroes} items={items} abilities={abilities} onHero={handleHero} debug={debug} />
+        <BrawlView
+          key={dataRevision}
+          hero={hero}
+          heroes={heroes}
+          items={items}
+          abilities={abilities}
+          onHero={handleHero}
+          debug={debug}
+        />
       </div>
-      {tab === 'tiers' && <TierList heroes={heroes} items={items} />}
+      {tab === 'tiers' && <TierList key={dataRevision} heroes={heroes} items={items} />}
       <footer>
         Data: deadlock-api.com (aggregate analytics, assets). See the{' '}
         <a href="https://github.com/Gidntsquia/deadlock-street-brawl-helper/wiki/Street-Brawl-Advisor">

@@ -11,7 +11,10 @@ const HARD_TIMEOUT_MS = 40_000;
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
-const { app } = require('electron');
+const { app, protocol } = require('electron');
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'brawl-data', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 // A dummy window sitting under other windows must keep rendering (and being capturable): no occlusion throttling.
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion,AllowWgcWindowCapturer');
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
@@ -235,6 +238,37 @@ async function main() {
   }
 
   if (wantsCase('testmode')) {
+    const updateDialog = await js(
+      control,
+      `(() => {
+      const button = document.querySelector('.data-updates button');
+      if (!button || button.disabled) return null;
+      button.click();
+      return true;
+    })()`,
+    );
+    const modal = await waitFor(
+      () =>
+        js(
+          control,
+          `(() => {
+      const d=document.querySelector('.data-update-dialog');
+      return d?.open ? { title:d.querySelector('h2')?.textContent, utc:d.innerText.includes('Patch time (UTC)'), modes:d.querySelector('select')?.options.length } : null;
+    })()`,
+        ),
+      2000,
+      50,
+    );
+    check(
+      'data-update-dialog',
+      !!updateDialog && modal?.title === 'Update Street Brawl data' && modal?.utc && modal?.modes === 2,
+      JSON.stringify(modal),
+    );
+    await js(
+      control,
+      `(() => { const d=document.querySelector('.data-update-dialog'); const b=[...d.querySelectorAll('button')].find(b=>b.textContent==='Close'); b?.click(); })()`,
+    );
+
     // Debug panel: hidden at launch, Ctrl+Shift+D toggles it, the tray entry toggles the same state.
     const hasDebug = () => js(control, '!!document.querySelector("[aria-label=\\"Debug panel\\"]")');
     const slim = await js(
@@ -421,7 +455,14 @@ async function main() {
       `${first.ms}ms (limit 2000ms) head="${first.last?.head}" cards="${first.last?.cards}"`,
     );
 
+    const counter = await waitFor(
+      () => js(overlay, `document.querySelector('.local-reroll-counter')?.textContent==='Re-rolls: 1'`),
+      2000,
+      50,
+    );
+    check('reroll-counter-visible', !!counter, 'Re-rolls: 1 read from the draft label');
     // Overlay geometry + click-through while the draft is up.
+
     const bounds = win.getBounds();
     const ob = overlay.getBounds();
     const near = (a, b, t) => Math.abs(a - b) <= t;
@@ -569,6 +610,20 @@ async function main() {
       JSON.stringify(tipSeen?.drawn.map((r) => r.kind)),
     );
     check('ability-panel-overlay-visible', overlay.isVisible(), `visible=${overlay.isVisible()}`);
+    const tipStyle = await js(
+      overlay,
+      `(() => { const e=document.querySelector('.overlay-ap'); if(!e)return null;const r=e.getBoundingClientRect();return {left:r.left,bottom:innerHeight-r.bottom,width:r.width,opacity:Number(getComputedStyle(e).opacity)};})()`,
+    );
+    check(
+      'compact-ability-tip',
+      !!tipStyle &&
+        Math.abs(tipStyle.left - 16) < 1 &&
+        Math.abs(tipStyle.bottom - 16) < 1 &&
+        tipStyle.width <= 316 &&
+        tipStyle.opacity === 0.5,
+      JSON.stringify(tipStyle),
+    );
+
     const gone = await waitFor(async () => !(await readOverlay()).ap, TIP_MS + 2_000, 100);
     const shown = Date.now() - tipStart;
     check(

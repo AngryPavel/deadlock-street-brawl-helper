@@ -2,7 +2,6 @@
 // responsive while frames are read. It keeps the small amount of state needed to decide when a screen is "new":
 // cards are accepted once two consecutive frames agree, and the expensive labels / hero bar read runs only then.
 import {
-  BRAWL_LAYOUT,
   HERO_BAR,
   decodeIconIndex,
   isShopScreen,
@@ -15,7 +14,11 @@ import {
   type DraftMeta,
   type InventoryRead,
 } from './recognise';
-import { readRerollsRemaining, terminateOCR, warmOCR } from './ocr';
+import { terminateOCR, warmOCR } from './ocr';
+import { RerollCounterReader } from '../local/rerollCounter';
+import { hudLayout } from '../local/hudLayout';
+import { CardNameRecovery, serialFrames } from '../local/cardRecognition';
+import { stopItemNameOCR } from '../local/cardNameOcr';
 import type { IconIndex } from './types';
 
 export interface FrameRegion {
@@ -53,9 +56,10 @@ export type WorkerIn =
 export type WorkerOut =
   | FrameResult
   | { type: 'tick'; full: boolean } // full: send a whole frame; otherwise just the probe crop
-  | { type: 'rerolls'; forKey: string; rerollsRemaining: number };
+  | { type: 'rerolls'; forKey: string; forRound: number; forChoice: number; rerollsRemaining: number; spent: boolean };
 
-interface FrameResult {
+export interface FrameResult {
+  pending?: boolean;
   type: 'result';
   shop: boolean; // isShopScreen(img) for this frame -- false means card/inventory recognition was skipped entirely
   round: number; // this frame's ROUND / CHOICE labels (0: unread; always 0 on a non-draft frame)
@@ -75,12 +79,23 @@ let lastKey = '',
   acceptedKey = '';
 let lastInv = '',
   sentInv = '';
-// re-roll caption re-reads on a settled draft screen (see the draft branch of the frame handler)
-let rerollBusy = false,
-  rerollAt = 0,
-  rerollLast = -2,
-  rerollKey = '';
-
+const rerollCounter = new RerollCounterReader();
+const recovery = new CardNameRecovery();
+let names: Record<string, string> = {};
+function pollRerolls(img: Parameters<RerollCounterReader['poll']>[0]) {
+  rerollCounter.poll(
+    img,
+    { key: acceptedKey, round: acceptedRound, choice: acceptedChoice },
+    performance.now(),
+    (rerollsRemaining, ctx, spent) => {
+      if (spent) {
+        acceptedKey = lastKey = '';
+        settledSig = pendingSig = null;
+      }
+      post({ type: 'rerolls', forKey: ctx.key, forRound: ctx.round, forChoice: ctx.choice, rerollsRemaining, spent });
+    },
+  );
+}
 let intervalMs = 250;
 // Off the shop screen there's nothing to react to quickly -- poll much slower, and only read the small
 // "CHOICE n OF 3" crop, until the shop reappears.
@@ -134,8 +149,8 @@ let acceptedRound = 0,
 
 const forgetDraft = () => {
   lastKey = acceptedKey = lastInv = sentInv = '';
-  rerollLast = -2;
-  rerollKey = '';
+  rerollCounter.reset();
+  recovery.reset();
   wasShop = false;
   settledSig = pendingSig = null;
   knownHero = null;
@@ -160,13 +175,12 @@ const stage = <T>(name: string, fn: () => T): T => {
 const BAR_SIG_MAX_CHANGED = 12; // of ~200 sampled channel values; a different portrait moves most of them
 let matchBar: { bar: DraftMeta['bar']; self: number; sig: Uint8Array } | null = null;
 const barSig = (img: { width: number; height: number; data: Uint8ClampedArray }): Uint8Array => {
-  const sx = img.width / BRAWL_LAYOUT.ref.width,
-    sy = img.height / BRAWL_LAYOUT.ref.height,
-    out: number[] = [];
+  const { sx, sy, offsetX } = hudLayout(img.width, img.height);
+  const out: number[] = [];
   for (const cx of [...HERO_BAR.left, ...HERO_BAR.right])
     for (let dy = -30; dy <= 30; dy += 15)
       for (let dx = -30; dx <= 30; dx += 15) {
-        const i = (Math.round((HERO_BAR.cy + dy) * sy) * img.width + Math.round((cx + dx) * sx)) * 4;
+        const i = (Math.round((HERO_BAR.cy + dy) * sy) * img.width + Math.round(offsetX + (cx + dx) * sx)) * 4;
         out.push(img.data[i]!, img.data[i + 1]!, img.data[i + 2]!);
       }
   return Uint8Array.from(out);
@@ -183,197 +197,179 @@ const tick = (after: number, full: boolean) => {
   timer = setTimeout(() => post({ type: 'tick', full }), after);
 }; // one chain, even if the page sent two frames
 
-self.addEventListener('message', (ev: MessageEvent<WorkerIn>) => {
-  const msg = ev.data;
-  if (msg.type === 'stop') {
-    clearTimeout(timer);
-    forgetDraft();
-    matchBar = null;
-    void terminateOCR();
-    return;
-  }
-  if (msg.type === 'warm') {
-    // Sent when the app opens, long before a draft: decode the icon index now so the first frame does not.
-    index ??= decodeIconIndex(msg.index);
-    tiers = msg.tiers;
-    return;
-  }
-  if (msg.type === 'init' || msg.type === 'reset') {
-    if (msg.type === 'init') {
-      index ??= decodeIconIndex(msg.index);
-      tiers = msg.tiers;
-      intervalMs = msg.intervalMs;
-    }
-    forgetDraft();
-    warmOCR(); // capture only runs around the draft now: load the OCR engine with it (freed again on 'stop')
-    tick(0, false);
-    return;
-  }
-  if (msg.type === 'idle') {
-    tick(intervalMs, false);
-    return;
-  }
-  if (!index) return;
-  const idx = index; // narrowed for the stage closures below
-  const t0 = performance.now();
-  if (msg.type === 'probe') {
-    const crop = {
-      width: msg.width,
-      height: msg.height,
-      data: new Uint8ClampedArray(msg.buffer),
-      channels: 4 as const,
-      origin: { x: msg.x, y: msg.y, fullWidth: msg.frameW, fullHeight: msg.frameH },
-    };
-    if (isShopScreen(crop)) {
-      tick(0, true); // a draft screen: ask for the whole frame right away
-      return;
-    }
-    post(nonShopResult(t0));
-    // A single non-draft frame between two draft frames is a blink: check again soon before going slow.
-    tick(wasShop ? intervalMs : IDLE_INTERVAL_MS, false);
-    wasShop = false;
-    return;
-  }
-  stages = DEV ? {} : undefined;
-  const img = stage('paste', () => pasteRegions(msg.width, msg.height, msg.regions));
-  // Skip card/inventory recognition entirely off the shop screen (menus, gameplay, the round-end transition
-  // into the next shop) -- isShopScreen is one small glyph read instead of three full icon searches.
-  const labels = readRoundChoice(img);
-  if (labels.choice === 0) {
-    post(nonShopResult(t0));
-    tick(wasShop ? intervalMs : IDLE_INTERVAL_MS, false);
-    wasShop = false;
-    return;
-  }
-  wasShop = true;
-  const sig = frameSig(msg.regions);
-  if (
-    acceptedKey &&
-    acceptedKey === lastKey &&
-    labels.choice === acceptedChoice &&
-    (labels.round === 0 || labels.round === acceptedRound) &&
-    sameSig(settledSig, sig)
-  ) {
-    post({
-      type: 'result',
-      shop: true,
-      round: labels.round,
-      choice: labels.choice,
-      reads: settledReads,
-      key: acceptedKey,
-      accepted: false,
-      meta: null,
-      inventory: null,
-      ms: performance.now() - t0,
-      stages,
-    });
-    tick(SETTLED_INTERVAL_MS, true);
-    return;
-  }
-  // A new picture is about to be read: ask for the next frame now, so the page copies it while this one is being read
-  // (the two-frame check below then finds it waiting instead of paying copy + hop after the read). One tick per frame:
-  // the end of this handler does not tick again.
-  clearTimeout(timer);
-  post({ type: 'tick', full: true });
-  // A frame that looks the same as the one that just produced a full set of cards (and carries the same choice
-  // label) confirms that read without repeating the expensive icon search: a new screen is accepted a frame sooner.
-  const confirmed = lastKey !== '' && pendingChoice === labels.choice && sameSig(pendingSig, sig);
-  const reads = confirmed ? pendingReads : stage('cards', () => readDraftScreen(img, idx, (id) => tiers[id] ?? 0));
-  const seen = reads.filter((r) => r.present).length;
-  const key = seen === 3 ? reads.map((r) => `${r.itemId}${r.enhanced ? '+' : ''}`).join(',') : '';
-  let accepted = false,
-    meta: DraftMeta | null = null,
-    inventory: number[] | null = null;
-  if (key && key === lastKey) {
-    // A new card set, or the ROUND / CHOICE label changed under the same cards (a stale label must not stand):
-    // (re)accept, which re-reads the hero bar and labels once the screen has settled.
-    const labelsChanged =
-      key === acceptedKey && (labels.choice !== acceptedChoice || (labels.round > 0 && labels.round !== acceptedRound));
-    if (key !== acceptedKey || labelsChanged) {
-      acceptedKey = key;
-      acceptedChoice = labels.choice;
-      if (labels.round > 0) acceptedRound = labels.round;
-      accepted = true;
-      const bsig = barSig(img);
-      if (!knownHero && matchBar && sameBar(matchBar.sig, bsig)) knownHero = matchBar;
-      meta = stage('meta', () => readDraftMeta(img, idx, knownHero ?? undefined, true));
-      if (meta.self) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
-      // the hero bar is constant while the draft screen stays up; keep it until the screen closes (nonShopResult)
-      knownHero = meta.self ? { bar: meta.bar, self: meta.self } : null;
-      // rerollsRemaining above is only the fast "is there a glyph at all" read (0 or -1 pending); resolve
-      // the actual digit via real OCR off the hot path and post it once it's ready, tagged with the key it
-      // was read for so a stale, slow OCR result from a since-superseded card set is never applied.
-      if (meta.rerollsRemaining < 0) {
-        const forKey = key;
-        readRerollsRemaining(img)
-          .then((rerollsRemaining) => {
-            rerollLast = rerollsRemaining;
-            rerollKey = forKey;
-            post({ type: 'rerolls', forKey, rerollsRemaining });
-          })
-          .catch(() => {}); // the OCR engine was freed (capture stopped) while this was running
+self.addEventListener(
+  'message',
+  serialFrames(
+    async (ev: MessageEvent<WorkerIn>) => {
+      const msg = ev.data;
+      if (msg.type === 'stop') {
+        clearTimeout(timer);
+        forgetDraft();
+        matchBar = null;
+        void terminateOCR();
+        void stopItemNameOCR();
+        return;
       }
-    }
-    // The caption can update a beat after the cards do (or the first read can land mid-animation), so keep
-    // re-reading it on the settled screen and post whenever the count changes. Throttled, one read at a time.
-    if (!accepted && key === acceptedKey) {
-      const now = Date.now();
-      if (!rerollBusy && now - rerollAt > 600) {
-        rerollBusy = true;
-        rerollAt = now;
-        const forKey = key;
-        readRerollsRemaining(img)
-          .then((v) => {
-            if (v !== rerollLast || forKey !== rerollKey) {
-              rerollLast = v;
-              rerollKey = forKey;
-              post({ type: 'rerolls', forKey, rerollsRemaining: v });
-            }
-          })
-          .catch(() => {})
-          .finally(() => {
-            rerollBusy = false;
-          });
+      if (msg.type === 'warm') {
+        // Sent when the app opens, long before a draft: decode the icon index now so the first frame does not.
+        index ??= decodeIconIndex(msg.index);
+        tiers = msg.tiers;
+        names = msg.index.names ?? {};
+        return;
       }
-    }
-    // the inventory grid is only on the draft screen; accept a read once two frames agree
-    const inv: InventoryRead[] = stage('inventory', () => readInventory(img, idx, msg.prefer));
-    const ids = inv
-      .map((r) => r.itemId)
-      .filter(Boolean)
-      .sort((a, b) => a - b);
-    const ik = ids.join(',');
-    if (ik === lastInv && ik !== sentInv) {
-      sentInv = ik;
-      inventory = ids;
-    }
-    lastInv = ik;
-  } else if (!key) {
-    lastInv = '';
-    // A card is unreadable: the page may drop its advice (see BrawlView), so the same set must be accepted again
-    // once all three cards read, or the advice would never come back.
-    acceptedKey = '';
-  }
-  lastKey = key;
-  pendingSig = key ? sig : null;
-  pendingReads = reads;
-  pendingChoice = labels.choice;
-  settledSig = key !== '' && key === acceptedKey ? sig : null;
-  settledReads = reads;
-  post({
-    type: 'result',
-    shop: true,
-    round: labels.round,
-    choice: labels.choice,
-    reads,
-    key,
-    accepted,
-    meta,
-    inventory,
-    ms: performance.now() - t0,
-    stages,
-  });
-});
+      if (msg.type === 'init' || msg.type === 'reset') {
+        if (msg.type === 'init') {
+          index ??= decodeIconIndex(msg.index);
+          tiers = msg.tiers;
+          names = msg.index.names ?? {};
+          intervalMs = msg.intervalMs;
+        }
+        forgetDraft();
+        warmOCR(); // capture only runs around the draft now: load the OCR engine with it (freed again on 'stop')
+        tick(0, false);
+        return;
+      }
+      if (msg.type === 'idle') {
+        tick(intervalMs, false);
+        return;
+      }
+      if (!index) return;
+      const idx = index; // narrowed for the stage closures below
+      const t0 = performance.now();
+      if (msg.type === 'probe') {
+        const crop = {
+          width: msg.width,
+          height: msg.height,
+          data: new Uint8ClampedArray(msg.buffer),
+          channels: 4 as const,
+          origin: { x: msg.x, y: msg.y, fullWidth: msg.frameW, fullHeight: msg.frameH },
+        };
+        if (isShopScreen(crop)) {
+          tick(0, true); // a draft screen: ask for the whole frame right away
+          return;
+        }
+        post(nonShopResult(t0));
+        // A single non-draft frame between two draft frames is a blink: check again soon before going slow.
+        tick(wasShop ? intervalMs : IDLE_INTERVAL_MS, false);
+        wasShop = false;
+        return;
+      }
+      stages = DEV ? {} : undefined;
+      const img = stage('paste', () => pasteRegions(msg.width, msg.height, msg.regions));
+      // Skip card/inventory recognition entirely off the shop screen (menus, gameplay, the round-end transition
+      // into the next shop) -- isShopScreen is one small glyph read instead of three full icon searches.
+      const labels = readRoundChoice(img);
+      if (labels.choice === 0) {
+        post(nonShopResult(t0));
+        tick(wasShop ? intervalMs : IDLE_INTERVAL_MS, false);
+        wasShop = false;
+        return;
+      }
+      wasShop = true;
+      const sig = frameSig(msg.regions);
+      if (
+        acceptedKey &&
+        acceptedKey === lastKey &&
+        labels.choice === acceptedChoice &&
+        (labels.round === 0 || labels.round === acceptedRound) &&
+        sameSig(settledSig, sig)
+      ) {
+        pollRerolls(img);
+        post({
+          type: 'result',
+          shop: true,
+          round: labels.round,
+          choice: labels.choice,
+          reads: settledReads,
+          key: acceptedKey,
+          accepted: false,
+          meta: null,
+          inventory: null,
+          ms: performance.now() - t0,
+          stages,
+        });
+        tick(SETTLED_INTERVAL_MS, true);
+        return;
+      }
+      // A new picture is about to be read: ask for the next frame now, so the page copies it while this one is being read
+      // (the two-frame check below then finds it waiting instead of paying copy + hop after the read). One tick per frame:
+      // the end of this handler does not tick again.
+      clearTimeout(timer);
+      post({ type: 'tick', full: true });
+      // A frame that looks the same as the one that just produced a full set of cards (and carries the same choice
+      // label) confirms that read without repeating the expensive icon search: a new screen is accepted a frame sooner.
+      const confirmed = lastKey !== '' && pendingChoice === labels.choice && sameSig(pendingSig, sig);
+      let reads = confirmed ? pendingReads : stage('cards', () => readDraftScreen(img, idx, (id) => tiers[id] ?? 0));
+      const readGeneration = recovery.generation;
+      if (reads.some((r) => !r.present)) reads = await recovery.recover(img, reads, names, tiers);
+      if (readGeneration !== recovery.generation) return;
+      const seen = reads.filter((r) => r.present).length;
+      const key = seen === 3 ? reads.map((r) => `${r.itemId}${r.enhanced ? '+' : ''}`).join(',') : '';
+      let accepted = false,
+        meta: DraftMeta | null = null,
+        inventory: number[] | null = null;
+      if (key && key === lastKey) {
+        // A new card set, or the ROUND / CHOICE label changed under the same cards (a stale label must not stand):
+        // (re)accept, which re-reads the hero bar and labels once the screen has settled.
+        const labelsChanged =
+          key === acceptedKey &&
+          (labels.choice !== acceptedChoice || (labels.round > 0 && labels.round !== acceptedRound));
+        if (key !== acceptedKey || labelsChanged) {
+          acceptedKey = key;
+          if (labels.round > 0) acceptedRound = labels.round;
+          else if (labels.choice === 1 && acceptedChoice > 1) acceptedRound = Math.min(5, acceptedRound + 1);
+          acceptedChoice = labels.choice;
+          accepted = true;
+          const bsig = barSig(img);
+          if (!knownHero && matchBar && sameBar(matchBar.sig, bsig)) knownHero = matchBar;
+          meta = stage('meta', () => readDraftMeta(img, idx, knownHero ?? undefined, true));
+          if (meta.self) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
+          // the hero bar is constant while the draft screen stays up; keep it until the screen closes (nonShopResult)
+          knownHero = meta.self ? { bar: meta.bar, self: meta.self } : null;
+        }
+        // the inventory grid is only on the draft screen; accept a read once two frames agree
+        const inv: InventoryRead[] = stage('inventory', () => readInventory(img, idx, msg.prefer));
+        const ids = inv
+          .map((r) => r.itemId)
+          .filter(Boolean)
+          .sort((a, b) => a - b);
+        const ik = ids.join(',');
+        if (ik === lastInv && ik !== sentInv) {
+          sentInv = ik;
+          inventory = ids;
+        }
+        lastInv = ik;
+      } else if (!key) {
+        lastInv = '';
+        // A card is unreadable: the page may drop its advice (see BrawlView), so the same set must be accepted again
+        // once all three cards read, or the advice would never come back.
+        acceptedKey = '';
+      }
+      lastKey = key;
+      pendingSig = key ? sig : null;
+      pendingReads = reads;
+      pendingChoice = labels.choice;
+      settledSig = key !== '' && key === acceptedKey ? sig : null;
+      settledReads = reads;
+      if (key && key === acceptedKey) pollRerolls(img);
+      if (meta) meta.rerollsRemaining = rerollCounter.value ?? -1;
+      post({
+        type: 'result',
+        shop: true,
+        round: labels.round,
+        choice: labels.choice,
+        reads,
+        key,
+        accepted,
+        meta,
+        inventory,
+        ms: performance.now() - t0,
+        stages,
+      });
+    },
+    () => tick(intervalMs, true),
+  ),
+);
 
 const nonShopResult = (t0: number): FrameResult => {
   lastKey = acceptedKey = lastInv = sentInv = '';

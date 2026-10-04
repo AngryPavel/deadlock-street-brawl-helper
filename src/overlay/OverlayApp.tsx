@@ -11,6 +11,7 @@ import {
 } from '../brawl/draw';
 import { ScoreTip } from '../components/ScoreTip';
 import { AbilityPanel } from '../components/AbilityPanel';
+import { RerollCounterLabel } from '../local/RerollCounterLabel';
 import { DOT_TEXT, type DotState } from '../brawl/lobbyDot';
 import { log } from '../log';
 
@@ -192,11 +193,16 @@ export default function OverlayApp() {
   return (
     <>
       <canvas ref={canvasRef} style={{ position: 'fixed', inset: 0, width: '100vw', height: '100vh' }} />
-      {advice?.reroll && (
+      {advice && (
         <div className="overlay-panel">
-          <div className="overlay-panel-reroll">
-            RE-ROLL · {advice.reroll.expectedBest.toFixed(2)} vs {advice.reroll.currentBest.toFixed(2)}
-          </div>
+          <RerollCounterLabel remaining={advice.rerollsRemaining} />
+          {advice.reroll ? (
+            <div className="overlay-panel-reroll">
+              RE-ROLL · {advice.reroll.expectedBest.toFixed(2)} vs {advice.reroll.currentBest.toFixed(2)}
+            </div>
+          ) : (
+            <div>TAKE {advice.ranked[0]?.name}</div>
+          )}
         </div>
       )}
       {hover && hovered && (
