@@ -27,6 +27,7 @@ export interface OverlayAdvice {
   reroll: { expectedBest: number; currentBest: number } | null;
   ranked: OverlayAdviceCard[];
   status: string;
+  confidence?: string;
 }
 
 /** Everything the overlay may draw. It draws nothing at all unless `draft` (the item draft screen is on the

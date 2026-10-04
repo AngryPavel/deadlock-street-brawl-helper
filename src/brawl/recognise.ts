@@ -1127,7 +1127,7 @@ export function shopProbeRect(width: number, height: number) {
 /** Every part of a `width`x`height` draft frame the recogniser ever reads, in frame px: the three card icons (with
  *  the position/scale search slack and the tier numeral), the hero bar with the ROUND label, the CHOICE label, the
  *  re-roll caption and the inventory grid. Everything else on screen is never looked at, so the page copies only
- *  these rectangles out of the video instead of the whole frame (~11 % of its pixels). Padded past what the reads
+ *  these rectangles out of the video instead of the whole frame (under 25 % of its pixels). Padded past what the reads
  *  touch; `regions.test.ts` checks that masking a real frame to these changes no read. */
 export interface Region {
   x: number;
@@ -1150,13 +1150,6 @@ export function draftRegions(width: number, height: number): Region[] {
     boxes.push([b.x0 - pad, b.y0 - pad, b.x1 + pad, b.y1 + pad]);
   box(LABELS.choice);
   box(LABELS.rerolls);
-  for (const inv of INVENTORY_LAYOUTS)
-    boxes.push([
-      inv.x0 - inv.search - pad,
-      inv.y0 - inv.search - pad,
-      inv.x0 + (inv.cols - 1) * inv.pitch + inv.icon + inv.search + pad,
-      inv.y0 + (inv.rows - 1) * inv.pitch + inv.icon + inv.search + pad,
-    ]);
   return [
     ...boxes.map(([x0, y0, x1, y1]) => {
       const x = Math.max(0, Math.floor(offsetX + x0 * sx)),
@@ -1168,6 +1161,7 @@ export function draftRegions(width: number, height: number): Region[] {
         height: Math.min(height, Math.ceil(y1 * sy)) - y,
       };
     }),
+    ...inventoryRegions(width, height),
     ...cardNameRegions(width, height, cardAnchors(width, height)),
   ];
 }
@@ -1182,14 +1176,14 @@ export function readRoundChoice(img: RGBImage): { round: number; choice: number 
 }
 
 // ---- inventory grid ------------------------------------------------------------------------------------
-// The player's items sit bottom-left of the draft screen: two rows of five 66 px icons (2560x1440), 75 px pitch.
+// The player's items sit bottom-left of the draft screen: two rows of eight icons (2560x1440).
 // Reading it gives the owned list without any clicking, and a new icon that was on offer is the card the player took.
 const INVENTORY = {
   x0: 147,
   y0: 1272,
   pitch: 75,
   icon: 66,
-  cols: 5,
+  cols: 8,
   rows: 2,
   search: 6,
   scales: [0.94, 1, 1.06],
@@ -1198,6 +1192,30 @@ const INVENTORY = {
  *  edge and the tiles grow (72 px, 82 px pitch). `readInventory` reads both layouts and keeps the one that matches more. */
 const INVENTORY_WIDE = { ...INVENTORY, x0: 34, y0: 1261, pitch: 82, icon: 72 } as const;
 const INVENTORY_LAYOUTS = [INVENTORY, INVENTORY_WIDE] as const;
+
+/** Both supported grids overlap: copy their union once and fingerprint inventory independently of the cards. */
+export function inventoryRegions(width: number, height: number): Region[] {
+  const { sx, sy, offsetX } = hudLayout(width, height);
+  const pad = 12;
+  const x0 = Math.min(...INVENTORY_LAYOUTS.map((inv) => inv.x0 - inv.search - pad));
+  const y0 = Math.min(...INVENTORY_LAYOUTS.map((inv) => inv.y0 - inv.search - pad));
+  const x1 = Math.max(
+    ...INVENTORY_LAYOUTS.map((inv) => inv.x0 + (inv.cols - 1) * inv.pitch + inv.icon + inv.search + pad),
+  );
+  const y1 = Math.max(
+    ...INVENTORY_LAYOUTS.map((inv) => inv.y0 + (inv.rows - 1) * inv.pitch + inv.icon + inv.search + pad),
+  );
+  const x = Math.max(0, Math.floor(offsetX + x0 * sx));
+  const y = Math.max(0, Math.floor(y0 * sy));
+  return [
+    {
+      x,
+      y,
+      width: Math.min(width, Math.ceil(offsetX + x1 * sx)) - x,
+      height: Math.min(height, Math.ceil(y1 * sy)) - y,
+    },
+  ];
+}
 const MIN_INVENTORY_SCORE = 0.6; // for items that were on offer or are already owned
 const SURE_INVENTORY_SCORE = 0.85; // for anything else
 const MIN_INVENTORY_SD = 20; // raw pixel std-dev below which a slot counts as empty
@@ -1211,7 +1229,7 @@ export interface InventoryRead {
 }
 
 /**
- * Item ids in the ten inventory slots (0 = empty or unreadable). `prefer` (every card offered this game + items already
+ * Item ids in the sixteen inventory slots (0 = empty or unreadable). `prefer` (every card offered this game + items already
  * owned) settles icon twins and lowers the score floor; an item outside it needs a near-perfect match.
  */
 export function readInventory(img: RGBImage, index: DecodedIndex, prefer: number[] = []): InventoryRead[] {

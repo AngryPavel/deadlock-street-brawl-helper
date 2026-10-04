@@ -3,6 +3,10 @@ import { availableReroll, DEFAULT_OVERLAY_SETTINGS, type OverlaySettings } from 
 import { AbilityPointsReader, abilityPointsRect } from '../local/abilityPointsReader';
 import { stopItemNameOCR } from '../local/cardNameOcr';
 import { AbilityTipPolicy } from '../local/abilityTipPolicy';
+import { MatchMemory } from '../local/matchMemory';
+import { LocalOfferJournal, offerPatch, journalCards, type OfferContext } from '../local/offerJournal';
+import { adviceConfidence } from '../local/adviceConfidence';
+import type { OfferObservation } from '../local/dropDistribution';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { emptyStable, stabilise, type StableState } from '../brawl/stabilise';
 import { createPortal } from 'react-dom';
@@ -50,7 +54,7 @@ import { AbilityPanel } from './AbilityPanel';
 import { AdvicePanel } from './AdvicePanel';
 import { ItemTile } from './ItemTile';
 import { log } from '../log';
-import { usePersisted, isNumber, isNumberArray } from '../hooks/usePersisted';
+import { usePersisted, isNumber } from '../hooks/usePersisted';
 
 const FRAME_WAIT_MS = 150; // longest wait for a new video frame before copying anyway
 const CAPTURE_MS = 0; // pause between draft frames (the page now waits for a new video frame instead); the worker paces the loop (see worker.ts) so it keeps running while the tab is hidden
@@ -100,8 +104,28 @@ export function BrawlView({
   const [round, setRound] = usePersisted('round', isNumber, 1);
   const [choice, setChoice] = useState(1);
   const [rerollsLeft, setRerollsLeft] = useState<number | null>(null); // null: unread, conservatively treated as zero
-  const isEnemies = (v: unknown): v is number[] => isNumberArray(v) && v.length === ENEMY_SLOTS;
-  const [enemies, setEnemies] = usePersisted('enemies', isEnemies, Array(ENEMY_SLOTS).fill(0));
+  const [enemies, setEnemies] = useState<number[]>(Array(ENEMY_SLOTS).fill(0));
+  const matchMemoryRef = useRef(new MatchMemory());
+  const journalRef = useRef<LocalOfferJournal | null>(null);
+  if (!journalRef.current) {
+    let storage: Storage | undefined;
+    try {
+      storage = window.localStorage;
+    } catch {
+      /* Advice works when storage is disabled. */
+    }
+    journalRef.current = new LocalOfferJournal(storage);
+  }
+  const pendingOfferRef = useRef<{
+    context: OfferContext;
+    cards: OfferObservation['cards'];
+    generation: OfferObservation['generation'] | null;
+    count: number | null;
+    initialCount: number;
+    observedAt: number;
+  } | null>(null);
+  const lastOfferLabelRef = useRef('');
+  const nextRerollLabelRef = useRef('');
   const [owned, setOwned] = useState<number[]>([]);
   const [cards, setCards] = useState<Offer[]>([]);
   const [capture, setCapture] = useState<'off' | 'starting' | 'on'>('off');
@@ -205,6 +229,7 @@ export function BrawlView({
   }, [choice]);
   useEffect(() => {
     ownedRef.current = owned;
+    matchMemoryRef.current.setManualOwned(owned);
   }, [owned]);
   useEffect(() => {
     cardsRef.current = cards;
@@ -222,6 +247,20 @@ export function BrawlView({
   }, [hero.id]);
   // tagged with the hero it was fetched for, so switching hero shows the loader again instead of the old hero's numbers
   const analytics = loaded?.heroId === hero.id ? loaded.analytics : null;
+  const offerPatchRef = useRef<string | null>(null);
+  offerPatchRef.current = offerPatch(analytics?.stats_window);
+  const configRef = useRef(config);
+  configRef.current = config;
+  const testModeRef = useRef(false);
+  const flushJournal = () => {
+    const pending = pendingOfferRef.current;
+    if (!pending || !matchMemoryRef.current.rosterStable || testModeRef.current || window.brawlAPI?.isE2E) return;
+    const generation = pending.generation ?? (pending.count === pending.initialCount ? 'initial' : null);
+    // Attaching in the middle of a choice cannot establish whether its first visible set was rerolled.
+    if (!generation) return;
+    journalRef.current?.recordAccepted(pending.context, pending.cards, generation, pending.observedAt);
+    pendingOfferRef.current = null;
+  };
   const rerolls = rerollsLeft ?? 0;
 
   const input: BrawlInput | null = useMemo(
@@ -242,13 +281,14 @@ export function BrawlView({
     if (!input || cards.length < 3) return null; // advise only once all 3 cards are read
     const sets: Offer[][] = [[], [], []];
     sets[choice - 1] = cards;
-    return adviseDraft(input, { round, owned, enemies: enemyIds, sets });
-  }, [input, cards, round, owned, choice, enemyIds]);
+    return adviseDraft(input, { round, choice, rerollsRemaining: rerollsLeft, owned, enemies: enemyIds, sets });
+  }, [input, cards, round, owned, choice, enemyIds, rerollsLeft]);
   const ranked: RankedOffer[] = useMemo(() => advice?.sets[choice - 1] ?? [], [advice, choice]);
   useEffect(() => {
     rankedRef.current = ranked;
   }, [ranked]);
   const reroll = availableReroll(advice?.reroll, rerollsLeft);
+  const confidence = input ? adviceConfidence(input, ranked, reroll, round) : '';
   useEffect(() => {
     rerollRef.current = reroll;
   }, [reroll]);
@@ -318,13 +358,28 @@ export function BrawlView({
             rows: breakdownRows(r.parts, r.score, r.known),
           })),
           status,
+          confidence,
         }
       : null;
     draftRef.current = draftOpen;
     tipRef.current = tip;
     pushOverlay();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- pushOverlay only reads refs
-  }, [input, hero, round, choice, reroll, ranked, draftOpen, tip, status, gradeById, rerollsLeft, overlaySettings]);
+  }, [
+    input,
+    hero,
+    round,
+    choice,
+    reroll,
+    ranked,
+    draftOpen,
+    tip,
+    status,
+    gradeById,
+    rerollsLeft,
+    overlaySettings,
+    confidence,
+  ]);
 
   /** Ends a Detect now try and logs `detect.manual` with the outcome. */
   function finishDetect(outcome: 'hit' | 'miss' | 'failed') {
@@ -635,6 +690,7 @@ export function BrawlView({
     frames: [],
     message: null,
   });
+  testModeRef.current = testMode.on;
   useEffect(() => {
     if (!isElectron) return;
     const api = window.brawlAPI!;
@@ -891,6 +947,18 @@ export function BrawlView({
           (ev.data.forRound === 0 || ev.data.forRound === roundRef.current);
         log('brawl-view', 'info', 'rerolls.read', { value: ev.data.rerollsRemaining, applied });
         if (applied) {
+          const label = `${roundRef.current}:${choiceRef.current}`;
+          if (ev.data.spent) {
+            nextRerollLabelRef.current = label;
+            const pending = pendingOfferRef.current;
+            if (pending) journalRef.current?.markReroll(pending.context);
+          } else if (
+            pendingOfferRef.current &&
+            `${pendingOfferRef.current.context.round}:${pendingOfferRef.current.context.choice}` === label
+          ) {
+            pendingOfferRef.current.count = ev.data.rerollsRemaining >= 0 ? ev.data.rerollsRemaining : null;
+            flushJournal();
+          }
           if (ev.data.spent) {
             frameGate.invalidate();
             acceptedKeyRef.current = '';
@@ -915,6 +983,37 @@ export function BrawlView({
         return;
       }
       const r = ev.data;
+      // Game evidence is independent of whether a tooltip currently hides the offered cards.
+      if (r.meta?.self) {
+        const memory = matchMemoryRef.current;
+        const established = memory.enemies.length === ENEMY_SLOTS;
+        const observed = memory.observeRoster(r.meta.self, enemiesFrom(r.meta.bar, r.meta.self), r.round);
+        if (observed.newMatch) {
+          ownedRef.current = [...memory.owned];
+          setOwned([...memory.owned]);
+          setEnemies([...memory.enemies]);
+          offeredRef.current.clear();
+          for (const card of r.reads) if (card.present) offeredRef.current.add(card.itemId);
+          prevCardsRef.current = [];
+          setTook('');
+          if (established) {
+            journalRef.current?.startSession();
+            lastOfferLabelRef.current = '';
+            nextRerollLabelRef.current = '';
+          }
+          log('brawl-view', 'info', 'match.confirmed', { self: r.meta.self, enemies: memory.enemies });
+        }
+      }
+      if (r.inventory !== null) {
+        const before = ownedRef.current;
+        const { owned: after, gained } = matchMemoryRef.current.observeInventory(r.inventory, items, Date.now());
+        const pick = gained.find((id) => [...prevCardsRef.current, ...cardsRef.current].some((c) => c.itemId === id));
+        if (pick) setTook(byId.get(pick)?.name ?? '');
+        if (after.length !== before.length || after.some((id, i) => id !== before[i])) {
+          ownedRef.current = after;
+          setOwned(after);
+        }
+      }
       if (!frameGate.publish(r, performance.now())) return;
       if (perf.enabled) {
         perf.record(r.shop ? 'worker.draft' : 'worker.probe', r.ms);
@@ -949,6 +1048,32 @@ export function BrawlView({
           setChoice(meta.choice);
           choiceRef.current = meta.choice;
         }
+        const patch = offerPatchRef.current;
+        const layout = configRef.current?.item_draft_rounds_per_game_round[roundRef.current - 1]?.item_draft_rounds;
+        const label = `${roundRef.current}:${choiceRef.current}`;
+        if (patch && meta.self && layout && !testModeRef.current && !window.brawlAPI?.isE2E) {
+          const offerCards = journalCards(offers, byId, layout[choiceRef.current - 1]);
+          if (offerCards) {
+            const generation =
+              nextRerollLabelRef.current === label
+                ? 'reroll'
+                : lastOfferLabelRef.current && lastOfferLabelRef.current !== label
+                  ? 'initial'
+                  : null;
+            const context = { patch, heroId: meta.self, round: roundRef.current, choice: choiceRef.current };
+            if (generation === 'reroll') journalRef.current?.markReroll(context);
+            pendingOfferRef.current = {
+              context,
+              cards: offerCards,
+              generation,
+              count: meta.rerollsRemaining >= 0 ? meta.rerollsRemaining : null,
+              initialCount: configRef.current!.item_draft_rerolls_per_round[roundRef.current - 1] ?? 0,
+              observedAt: Date.now(),
+            };
+            nextRerollLabelRef.current = '';
+            lastOfferLabelRef.current = label;
+          }
+        }
         acceptedKeyRef.current = r.key;
         // read straight off the "N Re-Roll Remaining" caption instead of inferring a re-roll from a changed
         // card set, so a stale reroll suggestion clears the moment the game's own counter does. 0 here means
@@ -965,31 +1090,9 @@ export function BrawlView({
           const score = [...meta.bar.left, ...meta.bar.right].find((m) => m.heroId === me)?.score;
           log('brawl-view', 'info', 'hero.detect', { from: heroId, to: me, score });
           onHero(me, 'detected');
-          setOwned([]);
-          offeredRef.current.clear();
         }
-        const foes = enemiesFrom(meta.bar, me);
-        if (foes.length)
-          setEnemies((prev) => {
-            const n = [...prev];
-            for (const f of foes)
-              if (!n.includes(f)) {
-                const k = n.indexOf(0);
-                if (k < 0) break;
-                n[k] = f;
-              }
-            return n.every((x, i) => x === prev[i]) ? prev : n;
-          });
       }
-      if (r.inventory) {
-        // the grid is the truth for what is owned; a new entry that was on offer is the card just taken
-        const before = ownedRef.current,
-          after = r.inventory;
-        const gained = after.filter((id) => !before.includes(id));
-        const pick = gained.find((id) => [...prevCardsRef.current, ...cardsRef.current].some((c) => c.itemId === id));
-        if (pick) setTook(byId.get(pick)?.name ?? '');
-        if (after.length !== before.length || gained.length) setOwned(after);
-      }
+      flushJournal();
       if (!r.shop) {
         readsRef.current = [];
         const pv = previewRef.current;
@@ -1053,10 +1156,13 @@ export function BrawlView({
       if (vid && frames.supported) vid.cancelVideoFrameCallback(vfcId);
       w.removeEventListener('message', onMessage);
     };
-  }, [capture, byId, heroId, heroes, onHero, hero, setRound, setEnemies]);
+  }, [capture, byId, heroId, heroes, onHero, hero, items, setRound, setEnemies]);
 
   const took = (r: RankedOffer) => {
-    setOwned((o) => [...o, r.item.id]);
+    const acquired = matchMemoryRef.current.observeInventory([r.item.id], items, Date.now()).owned;
+    ownedRef.current = [...acquired];
+    setOwned([...acquired]);
+    setTook(r.item.name);
     setCards([]);
     if (choice < 3) setChoice(choice + 1);
     else if (round < 5) {
@@ -1120,6 +1226,7 @@ export function BrawlView({
       lastTaken={took_}
       owned={owned}
       ranked={ranked}
+      confidence={confidence}
       reroll={reroll}
       rerolls={rerolls}
       hero={hero}
@@ -1405,6 +1512,14 @@ export function BrawlView({
               <button
                 className="btn"
                 onClick={() => {
+                  matchMemoryRef.current.reset();
+                  journalRef.current?.startSession();
+                  pendingOfferRef.current = null;
+                  lastOfferLabelRef.current = nextRerollLabelRef.current = '';
+                  ownedRef.current = [];
+                  prevCardsRef.current = [];
+                  setRerollsLeft(null);
+                  workerRef.current?.postMessage({ type: 'reset' } satisfies WorkerIn);
                   setOwned([]);
                   setCards([]);
                   setTook('');

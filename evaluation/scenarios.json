@@ -1,0 +1,287 @@
+{
+  "version": 1,
+  "description": "Audit regression situations and structural controls. These are not independent expert labels or win-rate evidence. Splits keep development cases separate from a fixed validation group; no score weights were tuned on either group.",
+  "cases": [
+    {
+      "id": "training-infernus-r2c3-slot-flags",
+      "split": "training",
+      "provenance": "audit-regression",
+      "description": "Reported six-permutation failure: Capacitor, enhanced Spirit Rend, Cultist Sacrifice. Slot modifiers must travel with their cards.",
+      "hero": "Infernus",
+      "round": 2,
+      "choice": 3,
+      "rerollsRemaining": 1,
+      "owned": [],
+      "enemies": [],
+      "sets": [
+        [],
+        [],
+        [
+          {
+            "item": "Capacitor"
+          },
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Cultist Sacrifice"
+          }
+        ]
+      ],
+      "checks": ["permutation-invariance", "current-score-consistency", "last-choice-hold-zero"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "training-zero-rerolls",
+      "split": "training",
+      "provenance": "audit-regression",
+      "description": "A confirmed zero counter forbids a reroll, irrespective of card quality.",
+      "hero": "Infernus",
+      "round": 2,
+      "choice": 3,
+      "rerollsRemaining": 0,
+      "owned": [],
+      "enemies": [],
+      "sets": [
+        [],
+        [],
+        [
+          {
+            "item": "Capacitor"
+          },
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Cultist Sacrifice"
+          }
+        ]
+      ],
+      "checks": ["no-reroll", "permutation-invariance"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "training-unread-live-counter",
+      "split": "training",
+      "provenance": "audit-regression",
+      "description": "An unread live counter must not inherit the configured round allowance.",
+      "hero": "Infernus",
+      "round": 2,
+      "choice": 3,
+      "rerollsRemaining": null,
+      "owned": [],
+      "enemies": [],
+      "sets": [
+        [],
+        [],
+        [
+          {
+            "item": "Capacitor"
+          },
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Cultist Sacrifice"
+          }
+        ]
+      ],
+      "checks": ["no-reroll"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "training-singleton-tiers",
+      "split": "training",
+      "provenance": "audit-regression",
+      "description": "Structural control with exactly one eligible item per tier. Persistent slot modifiers leave no possible reroll improvement.",
+      "catalogRestriction": ["Spirit Rend", "Capacitor"],
+      "hero": "Infernus",
+      "round": 2,
+      "choice": 3,
+      "rerollsRemaining": 2,
+      "owned": [],
+      "enemies": [],
+      "sets": [
+        [],
+        [],
+        [
+          {
+            "item": "Capacitor"
+          },
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Spirit Rend"
+          }
+        ]
+      ],
+      "checks": ["no-reroll", "permutation-invariance"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "holdout-seven-mixed-flags",
+      "split": "holdout",
+      "provenance": "audit-regression",
+      "description": "Unchanged structural invariant on another hero and a choice with a future set to save tokens for.",
+      "hero": "Seven",
+      "round": 3,
+      "choice": 2,
+      "rerollsRemaining": 2,
+      "owned": ["Mystic Burst"],
+      "enemies": ["Infernus"],
+      "sets": [
+        [],
+        [
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Capacitor"
+          },
+          {
+            "item": "Cultist Sacrifice"
+          }
+        ],
+        []
+      ],
+      "checks": ["permutation-invariance", "current-score-consistency"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "holdout-owned-duplicate-context",
+      "split": "holdout",
+      "provenance": "audit-regression",
+      "description": "An already owned candidate and enemy context must be scored consistently in the visible set and reroll comparison.",
+      "hero": "Infernus",
+      "round": 2,
+      "choice": 1,
+      "rerollsRemaining": 2,
+      "owned": ["Improved Spirit"],
+      "enemies": ["Seven", "Lash"],
+      "sets": [
+        [
+          {
+            "item": "Improved Spirit"
+          },
+          {
+            "item": "Slowing Hex"
+          },
+          {
+            "item": "Enchanter's Emblem"
+          }
+        ],
+        [],
+        []
+      ],
+      "checks": ["owned-duplicate-penalty", "current-score-consistency", "permutation-invariance"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "holdout-counter-final-choice",
+      "split": "holdout",
+      "provenance": "audit-regression",
+      "description": "The current reroll comparison includes the same enemy, owned, and enhanced terms as displayed card scores.",
+      "hero": "Infernus",
+      "round": 2,
+      "choice": 3,
+      "rerollsRemaining": 2,
+      "owned": ["Mystic Burst", "Improved Spirit"],
+      "enemies": ["Seven", "Lash"],
+      "sets": [
+        [],
+        [],
+        [
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Cultist Sacrifice"
+          },
+          {
+            "item": "Warp Stone"
+          }
+        ]
+      ],
+      "checks": ["current-score-consistency", "last-choice-hold-zero", "permutation-invariance"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    },
+    {
+      "id": "holdout-singleton-with-future-choice",
+      "split": "holdout",
+      "provenance": "audit-regression",
+      "description": "Structural control: one item per tier and two remaining choices. Holding or spending any of ten tokens cannot change items under fixed flags.",
+      "catalogRestriction": ["Spirit Rend", "Capacitor"],
+      "hero": "Seven",
+      "round": 2,
+      "choice": 2,
+      "rerollsRemaining": 10,
+      "owned": [],
+      "enemies": [],
+      "sets": [
+        [],
+        [
+          {
+            "item": "Capacitor"
+          },
+          {
+            "item": "Spirit Rend",
+            "enhanced": true
+          },
+          {
+            "item": "Spirit Rend"
+          }
+        ],
+        []
+      ],
+      "checks": ["no-reroll", "permutation-invariance"],
+      "observation": {
+        "source": "synthetic-regression",
+        "unixTimestamp": null,
+        "matchId": null,
+        "patchId": null
+      }
+    }
+  ]
+}

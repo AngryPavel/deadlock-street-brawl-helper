@@ -1,7 +1,16 @@
 // Street Brawl draft engine. Pure function of (hero assets, item catalog, Street Brawl aggregate analytics,
 // mode config). Everything in the draft is free and the order is fixed by round, so there is no cost-efficiency or buy-time term. It never reads per-player data.
 import type { Item, ItemStat } from '../types';
-import { kitProfile, statValue } from './kit';
+import { buildStatMultipliers, counterMarginal, kitProfile, statContributions, statValue } from './kit';
+import {
+  heroBaseline,
+  historicalPrior,
+  roundStatsAvailable,
+  smoothedRate,
+  validCounts,
+} from '../local/scoringEvidence';
+import { createUniformDropDistribution } from '../local/dropDistribution';
+import { evaluateReroll } from '../local/rerollModel';
 import type { BrawlInput, DraftAdvice, DraftState, Offer, RankedOffer, RerollAdvice, ScoreParts } from './types';
 
 // tier: popularity and win-lift are normalised within a tier (see baseScores), so the within-tier score spread is
@@ -11,7 +20,7 @@ import type { BrawlInput, DraftAdvice, DraftState, Offer, RankedOffer, RerollAdv
 // to a top tier-2 pick.
 // enhanced: the same item with better numbers, worth a good part of a tier. Both the enhanced flag and the rare
 // (tier-bumped) flag belong to the card slot and survive a re-roll: a re-roll of an enhanced slot yields another
-// enhanced card and a re-roll of a rare slot yields another rare-tier card (see cardDist). So a weak rare or enhanced
+// enhanced card and a re-roll of a rare slot yields another rare-tier card (see local/rerollModel). So a weak rare or enhanced
 // card is often worth re-rolling: the slot keeps its bonus and only the item is drawn again.
 export const BRAWL_WEIGHTS = {
   popularity: 1.0,
@@ -26,20 +35,10 @@ export const BRAWL_WEIGHTS = {
   dup: 1.0,
 };
 const WIN_SHRINK_FRAC = 0.05; // K = max(200, 5 % of the tier's most-picked item)
-const MIN_PAIR_MATCHES = 20;
 const MIN_VS_MATCHES = 50; // enemy-filtered rows below this are ignored
-const ENHANCED_STAT_MULT = 1.25; // UNVERIFIED: the API does not publish enhanced numbers; measure from tooltips
+const ENHANCED_STAT_MULT = 1.25; // Explicit fallback assumption; EnhancedScoring can replace this or supply properties.
 const MAX_ACTIVES = 4; // Brawl keeps the 4-active cap (no per-slot caps); a 5th active gets a penalty, not a veto
 export const ACTIVE_OVERFLOW_PENALTY = 0.5;
-const REROLL_GAIN_THRESHOLD = 0; // re-roll whenever a fresh draw is expected to beat the set's best card
-// Per-card rare / enhanced chance as seen on screen: 4 rare and 3 enhanced of the 27 fixture cards
-// (scripts/fixtures/brawl-cards/labels.json). The config's outcome-weight tables give 0.39 and 0.26 per card if read as
-// counts over the nine cards of a round, which is far above what the draft shows and made a fresh set look better
-// than the best card of its tier; whatever those tables count, it is not that. Set either to null to use the config.
-const RARE_PER_CARD: number | null = 4 / 27;
-const ENHANCED_PER_CARD: number | null = 3 / 27;
-const CARDS_PER_SET = 3;
-
 export interface Base {
   item: Item;
   stat?: ItemStat;
@@ -48,12 +47,19 @@ export interface Base {
   kit: number;
   base: number;
   counter: number;
+  observedWinRate: number | null;
+  kitMedian: number;
+  evidence: {
+    baseline: 'hero-stats' | 'neutral';
+    currentMatches: number;
+    historicalPseudoMatches: number;
+    source: 'purchase-round' | 'item';
+    round?: number;
+  };
 }
 
 /** Items that can appear on a draft card. */
 const draftable = (i: Item) => !i.disabled && i.item_tier >= 1 && !/^upgrade_|Disabled/.test(i.name);
-
-const shrink = (wins: number, matches: number, K: number, mean: number) => (wins + K * mean) / (matches + K);
 
 /**
  * Per-item scores independent of the draft state. Popularity and win-lift are normalised WITHIN TIER:
@@ -63,31 +69,29 @@ const shrink = (wins: number, matches: number, K: number, mean: number) => (wins
  * 2x. The per-tier bonus (BRAWL_WEIGHTS.tier) is what compares a rare (tier-bumped) card with the normal cards of
  * its set: the within-tier terms only say how good a card is among its own tier.
  */
-export function baseScores(input: BrawlInput, enemies: number[] = []): Map<number, Base> {
+export function baseScores(input: BrawlInput, enemies: number[] = [], round?: number): Map<number, Base> {
   const { hero, abilities, items, analytics } = input;
   const catalog = new Map(items.filter(draftable).map((i) => [i.id, i]));
   const kit = kitProfile(hero, abilities);
   const stats = new Map(
-    analytics.item_stats.filter((s) => catalog.has(s.item_id) && s.matches > 0).map((s) => [s.item_id, s]),
+    analytics.item_stats.filter((s) => catalog.has(s.item_id) && validCounts(s)).map((s) => [s.item_id, s]),
+  );
+  const roundStats = new Map(
+    round && roundStatsAvailable(analytics)
+      ? analytics.round_item_stats?.filter((s) => s.round === round && validCounts(s)).map((s) => [s.item_id, s])
+      : [],
   );
   const tierMax: Record<number, number> = {};
   for (const s of stats.values()) {
     const t = catalog.get(s.item_id)!.item_tier;
     tierMax[t] = Math.max(tierMax[t] ?? 0, s.matches);
   }
-  const totalW = [...stats.values()].reduce((a, s) => a + s.wins, 0),
-    totalM = [...stats.values()].reduce((a, s) => a + s.matches, 0);
-  const meanWR = totalM ? totalW / totalM : 0.5;
-
-  // enemy-filtered populations: per enemy, the hero's mean win rate in those matches
-  const vsMean = new Map<number, number>();
-  for (const e of enemies) {
-    const rows = analytics.vs[String(e)];
-    if (!rows) continue;
-    const w = rows.reduce((a, r) => a + r.wins, 0),
-      m = rows.reduce((a, r) => a + r.matches, 0);
-    if (m) vsMean.set(e, w / m);
+  const roundTierMax: Record<number, number> = {};
+  for (const row of roundStats.values()) {
+    const item = catalog.get(row.item_id);
+    if (item) roundTierMax[item.item_tier] = Math.max(roundTierMax[item.item_tier] ?? 0, row.matches);
   }
+  const meanWR = heroBaseline(analytics);
 
   // kit value: unknown (unpriced) items get the median of their tier so the term is neutral for them
   const rawKit = new Map<number, number>();
@@ -101,31 +105,42 @@ export function baseScores(input: BrawlInput, enemies: number[] = []): Map<numbe
       .sort((a, b) => a - b);
     tierMedian[t] = xs.length ? xs[Math.floor(xs.length / 2)] : 0;
   }
-  const kitVal = (it: Item) => (rawKit.get(it.id)! > 0 ? rawKit.get(it.id)! : (tierMedian[it.item_tier] ?? 0));
+  const kitVal = (it: Item) =>
+    statContributions(it, kit).some((row) => row.value !== 0) ? rawKit.get(it.id)! : (tierMedian[it.item_tier] ?? 0);
   const kitNorm = (it: Item) => {
     const med = tierMedian[it.item_tier];
-    return med ? Math.min(2, kitVal(it) / med) / 2 : 0.5;
+    return med ? Math.max(-2, Math.min(2, kitVal(it) / med)) / 2 : kitVal(it) < 0 ? -0.5 : 0.5;
   };
 
   const out = new Map<number, Base>();
   for (const it of catalog.values()) {
     const stat = stats.get(it.id);
+    const roundStat = roundStats.get(it.id);
     const tm = tierMax[it.item_tier] ?? 0;
-    const pop = stat && tm ? stat.matches / tm : 0;
+    const pop =
+      stat && tm
+        ? stat.matches / tm
+        : roundStat && roundTierMax[it.item_tier]
+          ? roundStat.matches / roundTierMax[it.item_tier]
+          : 0;
     const K = Math.max(200, WIN_SHRINK_FRAC * tm);
-    const winLift = stat ? (shrink(stat.wins, stat.matches, K, meanWR) - meanWR) * 10 * pop : 0;
+    const row = roundStat ?? stat;
+    // All-match history is not a purchase-round prior: the populations have different semantics.
+    const prior = row && !roundStat ? historicalPrior(analytics, it.id, row.matches) : { matches: 0, rate: 0.5 };
+    const winLift = row ? (smoothedRate(row, meanWR, K, prior) - meanWR) * 10 * pop : 0;
     // counter: how much better the item does against the known enemies than against the field
     let counter = 0,
       n = 0;
     if (stat)
       for (const e of enemies) {
         const rows = analytics.vs[String(e)];
-        const mean = vsMean.get(e);
-        if (!rows || mean === undefined) continue;
+        if (!rows) continue;
         const r = rows.find((x) => x.item_id === it.id);
-        if (!r || r.matches < MIN_VS_MATCHES) continue;
-        const liftVs = shrink(r.wins, r.matches, K, mean) - mean;
-        const liftAll = shrink(stat.wins, stat.matches, K, meanWR) - meanWR;
+        if (!validCounts(r) || r.matches < MIN_VS_MATCHES) continue;
+        // No exact enemy-filtered hero denominator is available; compare associations around the
+        // same exact field baseline, without summing overlapping item rows into hero-games.
+        const liftVs = smoothedRate(r, meanWR, K) - meanWR;
+        const liftAll = smoothedRate(stat, meanWR, K, historicalPrior(analytics, it.id, stat.matches)) - meanWR;
         counter += (liftVs - liftAll) * 10 * pop;
         n++;
       }
@@ -137,22 +152,44 @@ export function baseScores(input: BrawlInput, enemies: number[] = []): Map<numbe
       BRAWL_WEIGHTS.kit * k +
       BRAWL_WEIGHTS.tier * (it.item_tier - 1) +
       (it.is_active_item ? BRAWL_WEIGHTS.active : 0);
-    out.set(it.id, { item: it, stat, pop, winLift, kit: k, base, counter });
+    out.set(it.id, {
+      item: it,
+      stat,
+      pop,
+      winLift,
+      kit: k,
+      base,
+      counter,
+      observedWinRate: row ? row.wins / row.matches : null,
+      kitMedian: tierMedian[it.item_tier] ?? 0,
+      evidence: {
+        baseline: validCounts(analytics.hero_stats) ? 'hero-stats' : 'neutral',
+        currentMatches: row?.matches ?? 0,
+        historicalPseudoMatches: prior.matches,
+        source: roundStat ? 'purchase-round' : 'item',
+        round: roundStat ? round : undefined,
+      },
+    });
   }
   return out;
 }
 
-/** Pair win-lift lookup (×10) from Street Brawl permutation stats. */
+/** Residual pair association (×10), above both individual smoothed associations. Not causal synergy. */
 export function pairLifts(input: BrawlInput): Map<string, number> {
-  const stats = input.analytics.item_stats;
-  const totalW = stats.reduce((a, s) => a + s.wins, 0),
-    totalM = stats.reduce((a, s) => a + s.matches, 0);
-  const meanWR = totalM ? totalW / totalM : 0.5;
+  const baseline = heroBaseline(input.analytics);
+  const stats = new Map(input.analytics.item_stats.filter(validCounts).map((row) => [row.item_id, row]));
+  const strength = Math.max(200, WIN_SHRINK_FRAC * Math.max(0, ...[...stats.values()].map((row) => row.matches)));
   const pair = new Map<string, number>();
   for (const p of input.analytics.permutation_stats) {
-    if (p.item_ids.length !== 2 || p.matches < MIN_PAIR_MATCHES) continue;
-    const lift = (p.wins / p.matches - meanWR) * 10;
+    if (p.item_ids.length !== 2 || !validCounts(p)) continue;
     const [a, b] = p.item_ids;
+    const sa = stats.get(a),
+      sb = stats.get(b);
+    if (a === b || !sa || !sb) continue; // missing individual evidence cannot establish interaction
+    const rate = (row: ItemStat) =>
+      smoothedRate(row, baseline, strength, historicalPrior(input.analytics, row.item_id, row.matches));
+    const expected = Math.max(0, Math.min(1, rate(sa) + rate(sb) - baseline));
+    const lift = (smoothedRate(p, expected, strength) - expected) * 10;
     pair.set(`${a}:${b}`, lift);
     pair.set(`${b}:${a}`, lift);
   }
@@ -190,39 +227,79 @@ export function scoreOffer(
   const actives = ownedItems.filter((o) => o.is_active_item).length;
   const activePenalty = item.is_active_item && actives >= MAX_ACTIVES ? -ACTIVE_OVERFLOW_PENALTY : 0;
   const dup = state.owned.includes(item.id);
+  const kit = kitProfile(input.hero, input.abilities);
+  const enhancedOverride = input.enhancedScoring?.itemOverrides?.[item.id];
+  const enhancedProperties = enhanced ? enhancedOverride?.properties : undefined;
+  const evaluatedItem = enhancedProperties ? { ...item, properties: enhancedProperties } : item;
+  const mult = buildStatMultipliers(evaluatedItem, ownedItems, kit);
+  const rows = statContributions(evaluatedItem, mult);
+  const raw = statValue(evaluatedItem, mult);
+  const marginalKit =
+    b && rows.some((row) => row.value !== 0)
+      ? b.kitMedian
+        ? Math.max(-2, Math.min(2, raw / b.kitMedian)) / 2
+        : raw < 0
+          ? -0.5
+          : b.kit
+      : (b?.kit ?? 0);
+  const enhancedMult =
+    enhanced && !enhancedProperties
+      ? (enhancedOverride?.statMultiplier ?? input.enhancedScoring?.statMultiplier ?? ENHANCED_STAT_MULT)
+      : 1;
+  const enhancedBonus = enhanced
+    ? (enhancedOverride?.scoreBonus ?? input.enhancedScoring?.scoreBonus ?? BRAWL_WEIGHTS.enhanced)
+    : 0;
+  const overlap = counterMarginal(item, ownedItems);
   const parts: ScoreParts = {
     pop: b ? BRAWL_WEIGHTS.popularity * Math.sqrt(b.pop) : 0,
     winLift: b ? BRAWL_WEIGHTS.winLift * b.winLift : 0,
-    kit: b ? BRAWL_WEIGHTS.kit * b.kit * (enhanced ? ENHANCED_STAT_MULT : 1) : 0,
+    kit: BRAWL_WEIGHTS.kit * marginalKit * enhancedMult,
     tier: BRAWL_WEIGHTS.tier * (item.item_tier - 1),
-    counter: b ? BRAWL_WEIGHTS.counter * b.counter : 0,
+    counter: b ? BRAWL_WEIGHTS.counter * b.counter * overlap : 0,
     synergy: BRAWL_WEIGHTS.synergy * synergy,
     active: (item.is_active_item ? BRAWL_WEIGHTS.active : 0) + activePenalty,
     upgrade: upgradesOwned ? BRAWL_WEIGHTS.upgrade : 0,
-    enhanced: enhanced ? BRAWL_WEIGHTS.enhanced : 0,
+    enhanced: enhancedBonus,
     dup: dup ? -BRAWL_WEIGHTS.dup : 0,
   };
   const score = Object.values(parts).reduce((a, x) => a + x, 0);
   const why: string[] = [];
   const hero = input.hero.name;
-  if (!b?.stat) why.push('no Street Brawl data for this item yet');
-  if (b && b.pop > 0.5)
+  if (!b?.evidence.currentMatches) why.push('no Street Brawl data for this item yet');
+  if (b?.evidence.baseline === 'neutral') why.push('hero-game baseline missing; neutral 50% prior');
+  if (b?.evidence.historicalPseudoMatches)
     why.push(
-      `picked in ${(b.pop * 100).toFixed(0)}% of ${hero} brawls (relative to the top tier-${item.item_tier} pick)`,
+      `historical prior: ${b.evidence.historicalPseudoMatches.toFixed(0)} pseudo-observations, current patch weighted more strongly`,
     );
-  if (b && b.winLift > 0.1) why.push(`+${(b.winLift * 10).toFixed(1)}% win rate vs ${hero} average`);
-  if (b && b.winLift < -0.1) why.push(`${(b.winLift * 10).toFixed(1)}% win rate vs ${hero} average`);
+  if (b?.evidence.source === 'purchase-round')
+    why.push(`round ${b.evidence.round} purchase association with match wins; not round victories or a causal effect`);
+  if (b && b.pop > 0.5)
+    why.push(`${(b.pop * 100).toFixed(0)}% relative usage vs the top tier-${item.item_tier} pick for ${hero}`);
+  if (b && Math.abs(b.winLift) > 0.1)
+    why.push(
+      `${b.winLift > 0 ? 'positive' : 'negative'} match-win association vs ${hero} baseline; weighted statistical score ${b.winLift.toFixed(2)}`,
+    );
   if (b && b.kit > 0.7) why.push(`scales ${hero}'s kit`);
-  if (b && b.counter > 0.1) why.push('wins more against this enemy team');
-  if (b && b.counter < -0.1) why.push('wins less against this enemy team');
-  if (synergy > 0.2) why.push('wins more alongside items you already hold');
-  if (synergy < -0.2) why.push('wins less alongside items you already hold');
+  if (b && b.counter > 0.1) why.push('positive enemy-conditioned match-win association');
+  if (b && b.counter < -0.1) why.push('negative enemy-conditioned match-win association');
+  if (overlap < 1) why.push('diminished counter value: a held item already supplies the same effect');
+  if (synergy > 0.2) why.push('positive pair interaction beyond individual item associations');
+  if (synergy < -0.2) why.push('negative pair interaction beyond individual item associations');
+  if (rows.some((row) => row.applicability === 'conditional'))
+    why.push('conditional stat effects have unknown uptime; positive values excluded from permanent kit value');
+  if (Object.keys(mult).some((key) => mult[key] < (kit[key] ?? 1)))
+    why.push('diminishing marginal stats: your build already supplies this benefit');
   if (upgradesOwned)
     why.push(
       `upgrades ${ownedItems.find((o) => item.component_items.includes(o.class_name))!.name}, which you already hold`,
     );
   if (activePenalty) why.push(`you already hold ${actives} active items`);
-  if (enhanced) why.push('enhanced version');
+  if (enhanced)
+    why.push(
+      enhancedProperties
+        ? 'enhanced properties supplied by local override'
+        : `enhanced fallback assumption: stat ×${enhancedMult}, bonus ${enhancedBonus}`,
+    );
   if (dup) why.push('you already hold this item');
   return {
     item,
@@ -231,151 +308,14 @@ export function scoreOffer(
     parts,
     why,
     usage: b?.pop ?? 0,
-    winRate: b?.stat ? b.stat.wins / b.stat.matches : null,
-    known: !!b?.stat,
-  };
-}
-
-/** Rare (tier-bumped) chance per card: the measured constant, else the config's outcome-count weight table. */
-function rareChancePerCard(input: BrawlInput, round: number): number {
-  if (RARE_PER_CARD !== null) return RARE_PER_CARD;
-  const r =
-    input.config.item_draft_rounds_per_game_round[
-      Math.min(round, input.config.item_draft_rounds_per_game_round.length) - 1
-    ];
-  if (!r) return 0;
-  let w = 0,
-    ew = 0;
-  for (const [k, v] of Object.entries(r.chance_rare.outcomes_to_weights)) {
-    w += v;
-    ew += Number(k) * v;
-  }
-  const cards = r.item_draft_rounds.length * CARDS_PER_SET;
-  return w ? Math.min(1, ew / w / cards) : 0;
-}
-
-/** Enhanced chance per card: the measured constant, else the config's outcome-count weight table. */
-function enhancedChancePerCard(input: BrawlInput, round: number): number {
-  if (ENHANCED_PER_CARD !== null) return ENHANCED_PER_CARD;
-  const r =
-    input.config.item_draft_rounds_per_game_round[
-      Math.min(round, input.config.item_draft_rounds_per_game_round.length) - 1
-    ];
-  if (!r) return 0;
-  let w = 0,
-    ew = 0;
-  for (const [k, v] of Object.entries(r.chance_enhanced.outcomes_to_weights)) {
-    w += v;
-    ew += Number(k) * v;
-  }
-  const cards = r.item_draft_rounds.length * CARDS_PER_SET;
-  return w ? Math.min(1, ew / w / cards) : 0;
-}
-
-interface Dist {
-  s: number;
-  w: number;
-}
-
-/**
- * Score distribution of one fresh card in a given set: every draftable item of the set's normal tier (rare tier with
- * probability pRare), weighted uniformly within the tier. Items with no Street Brawl data are in the pool too (they
- * are offered just as often; they only score their tier and kit value). `enhanced` is the slot's flag when known
- * (it survives a re-roll); null draws it with the round's enhanced chance. `rare` likewise fixes the slot's tier bump
- * (a rare slot re-rolls into another rare-tier card, a normal slot into a normal one); null draws it with the round's
- * rare chance. `actives` applies the overflow penalty.
- */
-function cardDist(
-  input: BrawlInput,
-  bases: Map<number, Base>,
-  round: number,
-  setIndex: number,
-  enhanced: boolean | null,
-  actives = 0,
-  rare: boolean | null = null,
-): Dist[] | null {
-  const r =
-    input.config.item_draft_rounds_per_game_round[
-      Math.min(round, input.config.item_draft_rounds_per_game_round.length) - 1
-    ];
-  const tiers = r?.item_draft_rounds[setIndex];
-  if (!tiers) return null;
-  const pRare = rare === null ? rareChancePerCard(input, round) : rare ? 1 : 0;
-  const pEnh = enhanced === null ? enhancedChancePerCard(input, round) : enhanced ? 1 : 0;
-  const out: Dist[] = [];
-  for (const [tier, p] of [
-    [tiers.normal_mod_tier, 1 - pRare],
-    [tiers.rare_mod_tier, pRare],
-  ] as const) {
-    if (p <= 0) continue;
-    const xs = [...bases.values()].filter((b) => b.item.item_tier === tier);
-    for (const b of xs) {
-      const pen = b.item.is_active_item && actives >= MAX_ACTIVES ? -ACTIVE_OVERFLOW_PENALTY : 0;
-      const plain = b.base + pen;
-      const enh = b.base + pen + BRAWL_WEIGHTS.enhanced + BRAWL_WEIGHTS.kit * b.kit * (ENHANCED_STAT_MULT - 1);
-      if (pEnh < 1) out.push({ s: plain, w: (p / xs.length) * (1 - pEnh) });
-      if (pEnh > 0) out.push({ s: enh, w: (p / xs.length) * pEnh });
-    }
-  }
-  return out.length ? out : null;
-}
-
-/** Distribution of the maximum of independent draws, one per slot: P(max ≤ v) = Π_j F_j(v). */
-function maxDist(slots: Dist[][]): Dist[] {
-  const values = [...new Set(slots.flat().map((d) => d.s))].sort((a, b) => a - b);
-  const sorted = slots.map((sl) => [...sl].sort((a, b) => a.s - b.s));
-  const idx = slots.map(() => 0),
-    F = slots.map(() => 0);
-  const out: Dist[] = [];
-  let prev = 0;
-  for (const v of values) {
-    let G = 1;
-    for (let j = 0; j < sorted.length; j++) {
-      while (idx[j] < sorted[j].length && sorted[j][idx[j]].s <= v) F[j] += sorted[j][idx[j]++].w;
-      G *= F[j];
-    }
-    if (G - prev > 0) out.push({ s: v, w: G - prev });
-    prev = G;
-  }
-  return out;
-}
-
-const mean = (d: Dist[]) => d.reduce((a, x) => a + x.s * x.w, 0);
-
-/**
- * Expected best score of a fresh set of 3 cards. `enhanced` and `rare` give the slots' flags when the set is on screen
- * (a re-roll keeps both); when the set is still unseen, every slot draws them at the round's chances.
- */
-function expectedBestOfSet(
-  input: BrawlInput,
-  bases: Map<number, Base>,
-  round: number,
-  setIndex: number,
-  enhanced: (boolean | null)[] = [null, null, null],
-  actives = 0,
-  rare: (boolean | null)[] = enhanced.map(() => null),
-): (RerollAdvice['pool'] & { expected: number; dist: Dist[] }) | null {
-  const r =
-    input.config.item_draft_rounds_per_game_round[
-      Math.min(round, input.config.item_draft_rounds_per_game_round.length) - 1
-    ];
-  const tiers = r?.item_draft_rounds[setIndex];
-  if (!tiers) return null;
-  const slots = enhanced.map((e, j) => cardDist(input, bases, round, setIndex, e, actives, rare[j] ?? null));
-  if (slots.some((x) => !x)) return null;
-  const dist = maxDist(slots as Dist[][]);
-  return {
-    tier: tiers.normal_mod_tier,
-    rareTier: tiers.rare_mod_tier,
-    pRare: rareChancePerCard(input, round),
-    expected: mean(dist),
-    dist,
+    winRate: b?.observedWinRate ?? null,
+    known: !!b?.evidence.currentMatches,
   };
 }
 
 /** Ranks every card, chooses the jointly best pick per set, and says whether a reroll is worth it. */
 export function adviseDraft(input: BrawlInput, state: DraftState): DraftAdvice {
-  const bases = baseScores(input, state.enemies);
+  const bases = baseScores(input, state.enemies, state.round);
   const pair = pairLifts(input);
   const layout = roundTiers(input, state.round);
   const sets = state.sets.map((set, i) =>
@@ -417,63 +357,38 @@ export function adviseDraft(input: BrawlInput, state: DraftState): DraftAdvice {
   };
   rec(0, []);
 
-  // reroll: suggested for the set with the largest expected gain (a fresh draw's expected best minus its best card)
-  // whenever that gain is positive. The on-screen slots keep their rare and enhanced flags through the re-roll, so a
-  // set holding a poor rare or enhanced card is valued against a fresh draw of the same rare tier / enhanced slot,
-  // which is what makes re-rolling a weak rare card worthwhile. The value of holding the re-roll for a later set is reported alongside (later sets
-  // on screen have a known gain; unseen ones are valued by backward induction over the distribution of their best
-  // card, V_j = E[max(gain_j, V_{j+1})]) and vetoes the re-roll when saving it is worth at least as much as re-rolling now.
-  // The state-dependent terms (synergy, counter, upgrade) are stripped from the current best so it is on the pool's scale.
-  let reroll: RerollAdvice | null = null;
-  const rerolls =
-    input.config.item_draft_rerolls_per_round[
-      Math.min(state.round, input.config.item_draft_rerolls_per_round.length) - 1
-    ] ?? 0;
-  if (rerolls > 0) {
-    const actives = state.owned
-      .map((id) => input.items.find((i) => i.id === id))
-      .filter((i) => i?.is_active_item).length;
-    const n = layout.length;
-    const known = sets.map((set, i) => {
-      if (!set.length) return null;
-      const flags = state.sets[i].map((o) => !!o.enhanced);
-      while (flags.length < CARDS_PER_SET) flags.push(false);
-      const normal = layout[i]?.normal ?? 0;
-      const rares = set.map((r) => r.item.item_tier > normal);
-      while (rares.length < CARDS_PER_SET) rares.push(false);
-      const e = expectedBestOfSet(input, bases, state.round, i, flags, actives, rares);
-      if (!e) return null;
-      const currentBest = Math.max(...set.map((r) => r.score - r.parts.synergy - r.parts.counter - r.parts.upgrade));
-      return {
-        currentBest,
-        expected: e.expected,
-        gain: e.expected - currentBest,
-        pool: { tier: e.tier, rareTier: e.rareTier, pRare: e.pRare },
-      };
-    });
-    const hold: number[] = Array(n + 1).fill(0); // hold[i] = value of still having the re-roll when set i comes up
-    for (let j = n - 1; j >= 0; j--) {
-      const k = known[j];
-      if (k) {
-        hold[j] = Math.max(k.gain, hold[j + 1]);
-        continue;
+  // A live unread counter is explicitly null and never authorises spending. Undefined retains the
+  // documented legacy CLI default; callers that capture the game always pass the observed count.
+  const rerollsRemaining =
+    state.rerollsRemaining === undefined
+      ? (input.config.item_draft_rerolls_per_round[
+          Math.min(state.round, input.config.item_draft_rerolls_per_round.length) - 1
+        ] ?? 0)
+      : state.rerollsRemaining;
+  const choiceIndex = state.choice === undefined ? state.sets.findIndex((set) => set.length > 0) : state.choice - 1;
+  const evaluation = evaluateReroll({
+    choices: layout.map((tier, i) => ({ normalTier: tier.normal, rareTier: tier.rare, offers: state.sets[i] })),
+    choiceIndex,
+    rerollsRemaining,
+    itemTier: (id) => bases.get(id)?.item.item_tier,
+    scoreOffer: (offer) => scoreOffer(input, bases, pair, state, offer).score,
+    distribution:
+      input.dropDistribution ??
+      createUniformDropDistribution([...bases.values()].map(({ item }) => ({ itemId: item.id, tier: item.item_tier }))),
+  });
+  const reroll: RerollAdvice | null = evaluation?.shouldReroll
+    ? {
+        set: choiceIndex,
+        currentBest: evaluation.currentBest,
+        expectedBest: evaluation.expectedBest,
+        gain: evaluation.gain,
+        holdValue: evaluation.holdValue,
+        pool: evaluation.pool,
+        distributionStatus: evaluation.distributionStatus,
+        assumptions: evaluation.assumptions,
+        decisionAdvantage: evaluation.decisionAdvantage,
       }
-      const e = expectedBestOfSet(input, bases, state.round, j, undefined, actives);
-      hold[j] = e ? e.dist.reduce((a, d) => a + d.w * Math.max(e.expected - d.s, hold[j + 1]), 0) : hold[j + 1];
-    }
-    known.forEach((k, i) => {
-      if (!k) return;
-      if (k.gain > REROLL_GAIN_THRESHOLD && k.gain > hold[i + 1] && (!reroll || k.gain > reroll.gain))
-        reroll = {
-          set: i,
-          currentBest: k.currentBest,
-          expectedBest: k.expected,
-          gain: k.gain,
-          holdValue: hold[i + 1],
-          pool: k.pool,
-        };
-    });
-  }
+    : null;
   return { sets, picks: best, reroll };
 }
 

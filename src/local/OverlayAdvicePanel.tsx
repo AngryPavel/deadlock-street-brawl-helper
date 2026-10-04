@@ -29,6 +29,7 @@ export function OverlayAdvicePanel({ advice }: { advice: OverlayAdvice }) {
               {r.winRate !== null ? ` · ${(r.winRate * 100).toFixed(0)}% wins` : ''}
             </div>
           ))}
+          {advice.confidence && <div className="overlay-panel-status">{advice.confidence}</div>}
           {advice.status && <div className="overlay-panel-status">{advice.status}</div>}
         </>
       )}

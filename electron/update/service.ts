@@ -1,15 +1,22 @@
 import { cp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { DataStatus, PatchAnnouncement, UpdateProgress, UpdateRequest } from '../../src/data/updateTypes';
+import type {
+  DataStatus,
+  PatchAnnouncement,
+  StatsWindow,
+  UpdateProgress,
+  UpdateRequest,
+} from '../../src/data/updateTypes';
 import type { Manifest } from '../../src/data/load';
 import type { Hero } from '../../src/types';
 import type { IconIndex } from '../../src/brawl/types';
 import { buildIconIndex, fetchCatalog, saveJson, type CatalogHttp } from './catalog';
 import { latestPatch, mergeCounters, patchBoundary, validateRequest, type Counters } from './policy';
+import { exactHeroStats, roundItemStats } from './analytics';
 
 const API = 'https://api.deadlock-api.com';
-const SCHEMA = 1;
+const SCHEMA = 2;
 interface State {
   schema: number;
   patch: number;
@@ -23,6 +30,13 @@ interface Pointer {
   generation: string;
 }
 type Stats = Record<string, any[]>;
+interface StatisticsJob {
+  key: string;
+  label: string;
+  url: string;
+  parse?: (value: unknown) => any[];
+  optional?: boolean;
+}
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 async function readJson<T>(file: string): Promise<T> {
   return JSON.parse(await readFile(file, 'utf8')) as T;
@@ -50,6 +64,7 @@ export class DataUpdater {
   private progress = idle();
   private patchCheckedAt = 0;
   private patchCheck: Promise<void> | null = null;
+  private statisticsUpperBound = 0;
   constructor(
     readonly bundled: string,
     readonly directory: string,
@@ -203,6 +218,8 @@ export class DataUpdater {
     const q = new URLSearchParams({
       game_mode: 'street_brawl',
       min_unix_timestamp: String(patch),
+      // The API rounds max up to the next hour (even for an aligned input). Record its effective bound.
+      max_unix_timestamp: String(this.statisticsUpperBound - 1),
       min_match_id: String(minimum),
       max_match_id: String(maximum),
     });
@@ -235,7 +252,7 @@ export class DataUpdater {
   }
   private async batch(
     http: CatalogHttp,
-    jobs: { key: string; label: string; url: string }[],
+    jobs: StatisticsJob[],
     signal: AbortSignal,
     base: number,
     span: number,
@@ -256,13 +273,16 @@ export class DataUpdater {
             const job = jobs[next++]!;
             let rows: any[];
             try {
-              rows = await http.json<any[]>(job.url);
+              const value = await http.json<unknown>(job.url);
+              rows = job.parse ? job.parse(value) : (value as any[]);
+              if (!Array.isArray(rows)) throw new Error(`Invalid statistics: ${job.label}.`);
             } catch (error) {
+              if (job.optional && !signal.aborted) {
+                this.warn(`${job.label} unavailable; no historical support will be used.`);
+                this.report('Statistics', ++completed, jobs.length, job.label, base, span);
+                continue;
+              }
               failure = error;
-              return;
-            }
-            if (!Array.isArray(rows)) {
-              failure = new Error(`Invalid statistics: ${job.label}.`);
               return;
             }
             result[job.key] = rows;
@@ -280,6 +300,7 @@ export class DataUpdater {
   private async run(request: UpdateRequest, signal: AbortSignal) {
     const patch = patchBoundary(request.since),
       now = Math.floor(Date.now() / 1000);
+    this.statisticsUpperBound = Math.floor(now / 3600) * 3600 + 3600;
     const source = this.root,
       generation = `snapshot-${randomUUID()}`,
       stage = path.join(this.directory, 'snapshots', generation);
@@ -338,7 +359,10 @@ export class DataUpdater {
         created = now;
       }
       const ids = roster.join(',');
-      const jobs = [
+      const historicalMinimum = patch - 30 * 86400;
+      // max timestamps are inclusive and rounded up by the API. Leave the final pre-patch hour out.
+      const historicalMaximum = patch - 3600;
+      const jobs: StatisticsJob[] = [
         ...this.counters(catalog.heroes, patch, minimum, maximum),
         {
           key: 'items',
@@ -346,6 +370,32 @@ export class DataUpdater {
           url: this.query('item-stats', patch, 0, maximum, { bucket: 'hero', hero_ids: ids, min_matches: 1 }),
         },
         { key: 'heroes', label: 'Hero win rates', url: this.query('hero-stats', patch, 0, maximum) },
+        {
+          key: 'historical_items',
+          label: 'Optional historical item support',
+          optional: true,
+          url: this.query('item-stats', historicalMinimum, 0, maximum, {
+            bucket: 'hero',
+            hero_ids: ids,
+            min_matches: 1,
+            max_unix_timestamp: historicalMaximum - 1,
+          }),
+          parse: (value) => {
+            if (!Array.isArray(value)) throw new Error('Invalid historical item statistics.');
+            return value.map((row) => {
+              if (!Number.isSafeInteger(row.bucket) || !Number.isSafeInteger(row.item_id) || row.item_id <= 0)
+                throw new Error('Invalid historical item identity.');
+              return { bucket: row.bucket, item_id: row.item_id, ...exactHeroStats(row) };
+            });
+          },
+        },
+        ...catalog.heroes.map((h) => ({
+          key: `rounds:${h.id}`,
+          label: `Purchase-round statistics for ${h.name}`,
+          // Full bounded range each time: flow response rates and distinct counts are not additive.
+          url: this.query('item-flow-stats', patch, 0, maximum, { hero_ids: h.id, phase_count: 5, min_matches: 1 }),
+          parse: (value: unknown) => [roundItemStats(value)],
+        })),
         ...catalog.heroes.map((h) => ({
           key: `abilities:${h.id}`,
           label: `Ability orders for ${h.name}`,
@@ -362,12 +412,36 @@ export class DataUpdater {
       const counters = mergeCounters(frozen, tail);
       const heroRows = fetched
         .heroes!.filter((row) => roster.includes(row.hero_id))
-        .map(({ hero_id, wins, losses, matches }) => ({ hero_id, wins, losses, matches }));
+        .map((row) => ({ hero_id: row.hero_id, ...exactHeroStats(row), losses: row.matches - row.wins }));
       const games = heroRows.reduce((sum, row) => sum + row.matches, 0);
       if (!Number.isSafeInteger(games) || games <= 0)
         throw new Error('No post-patch matches yet. Try again once matches have been indexed.');
       const totals = new Map<number, any>();
+      const statsWindow: StatsWindow = {
+        schema_version: SCHEMA,
+        role: 'primary',
+        patch_id: `cutoff:${iso(patch)}`,
+        min_unix_timestamp: patch,
+        max_unix_timestamp: this.statisticsUpperBound,
+        max_match_id: maximum,
+        fetched_at: iso(now),
+        catalog_fetched_at: iso(now),
+        catalog_compatibility: 'current',
+        ...(this.patch && Math.ceil(this.patch.timestamp / 3600) * 3600 === patch
+          ? { patch_announcement: this.patch }
+          : {}),
+      };
+      const historicalWindow: StatsWindow = {
+        ...statsWindow,
+        role: 'historical-prior',
+        patch_id: null,
+        min_unix_timestamp: historicalMinimum,
+        max_unix_timestamp: historicalMaximum,
+        catalog_compatibility: 'unverified',
+      };
+      delete historicalWindow.patch_announcement;
       for (const hero of catalog.heroes) {
+        const heroStats = heroRows.find((row) => row.hero_id === hero.id);
         const items = fetched.items!.filter((row) => row.bucket === hero.id).map((row) => ({ ...row, bucket: 0 }));
         const vs = Object.fromEntries(
           catalog.heroes
@@ -389,6 +463,18 @@ export class DataUpdater {
         await saveJson(stage, `analytics/brawl/${hero.id}.json`, {
           hero_id: hero.id,
           game_mode: 'street_brawl',
+          stats_window: statsWindow,
+          // A missing hero row remains missing, never replaced by the sum of item samples.
+          ...(heroStats ? { hero_stats: { wins: heroStats.wins, matches: heroStats.matches } } : {}),
+          ...fetched[`rounds:${hero.id}`]![0],
+          ...(fetched.historical_items
+            ? {
+                historical_item_stats: fetched.historical_items
+                  .filter((row) => row.bucket === hero.id)
+                  .map(({ item_id, wins, matches }) => ({ item_id, wins, matches })),
+                historical_stats_window: historicalWindow,
+              }
+            : {}),
           item_stats: items,
           permutation_stats: pairs,
           ability_order_stats: abilities,
@@ -414,10 +500,12 @@ export class DataUpdater {
         game_mode: 'street_brawl',
         heroes: roster.length,
         min_unix_timestamp: patch,
-        max_unix_timestamp: now,
+        max_unix_timestamp: this.statisticsUpperBound,
         max_match_id: maximum,
         window_days: Math.round((now - patch) / 86400),
         since_patch: iso(patch),
+        stats_window: statsWindow,
+        ...(fetched.historical_items ? { historical_stats_window: historicalWindow } : {}),
       };
       await saveJson(stage, 'analytics/brawl/tier-list.json', {
         ...brawl,

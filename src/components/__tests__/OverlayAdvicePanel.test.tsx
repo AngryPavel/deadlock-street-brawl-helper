@@ -32,6 +32,7 @@ const advice: OverlayAdvice = {
     rows: [],
   })),
   status: 'Identified all three items',
+  confidence: 'Evidence: Close scores · uniform reroll approximation',
 };
 
 describe('live overlay advice', () => {
@@ -49,6 +50,7 @@ describe('live overlay advice', () => {
     expect(container.textContent).toContain('% picks');
     expect(container.textContent).toContain('% wins');
     expect(container.textContent).toContain(advice.status);
+    expect(container.textContent).toContain(advice.confidence);
   });
   it('never offers a reroll with zero or an unknown count; compact mode retains the action and counter', () => {
     for (const count of [0, -1, null, undefined]) {
@@ -60,6 +62,7 @@ describe('live overlay advice', () => {
       expect(container.textContent).toContain('TAKE');
       expect(container.querySelector('.local-reroll-counter')).not.toBeNull();
       expect(container.querySelector('.overlay-panel-card')).toBeNull();
+      expect(container.textContent).not.toContain('uniform reroll approximation');
       unmount();
     }
   });

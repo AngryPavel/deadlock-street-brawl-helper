@@ -89,6 +89,9 @@ npm run win:dev                    # From WSL: run the Windows app from a synced
 More details in the
 [wiki](https://github.com/Gidntsquia/deadlock-street-brawl-helper/wiki):
 
+The local [scoring assumptions and validation report](docs/algorithm-validation.md) documents evidence semantics,
+reroll approximations, and the reproducible structural audit (`npx tsx scripts/brawl-evaluate.ts`).
+
 - [Street Brawl Advisor](https://github.com/Gidntsquia/deadlock-street-brawl-helper/wiki/Street-Brawl-Advisor) — the mode's rules, card scoring, re-roll maths
 - [Screen Reader](https://github.com/Gidntsquia/deadlock-street-brawl-helper/wiki/Screen-Reader) — how cards, tiers, labels and your picks are recognised
 - [Overlay](https://github.com/Gidntsquia/deadlock-street-brawl-helper/wiki/Overlay) — screen capture and the always-on-top window

@@ -3,6 +3,8 @@
 // cards are accepted once two consecutive frames agree, and the expensive labels / hero bar read runs only then.
 import {
   HERO_BAR,
+  enemiesFrom,
+  inventoryRegions,
   decodeIconIndex,
   isShopScreen,
   readDraftMeta,
@@ -12,13 +14,13 @@ import {
   type CardRead,
   type DecodedIndex,
   type DraftMeta,
-  type InventoryRead,
 } from './recognise';
 import { terminateOCR, warmOCR } from './ocr';
 import { RerollCounterReader } from '../local/rerollCounter';
 import { hudLayout } from '../local/hudLayout';
 import { CardNameRecovery, serialFrames } from '../local/cardRecognition';
 import { stopItemNameOCR } from '../local/cardNameOcr';
+import { InventoryConfirmation } from '../local/inventoryConfirmation';
 import type { IconIndex } from './types';
 
 export interface FrameRegion {
@@ -67,7 +69,7 @@ export interface FrameResult {
   reads: CardRead[];
   key: string; // item ids of the three cards, '' when fewer than three are visible
   accepted: boolean; // true on the frame a new stable set of three cards is first accepted
-  meta: DraftMeta | null; // round / choice / hero bar, on the accepted frame only
+  meta: DraftMeta | null; // stable round / choice / hero bar, retained while the same draft is visible
   inventory: number[] | null; // owned items from the inventory grid, once two consecutive reads agree; null otherwise
   ms: number;
   stages?: Record<string, number>; // dev builds only: milliseconds per recogniser stage
@@ -77,8 +79,11 @@ let index: DecodedIndex | null = null;
 let tiers: Record<number, number> = {};
 let lastKey = '',
   acceptedKey = '';
-let lastInv = '',
-  sentInv = '';
+const inventoryConfirmation = new InventoryConfirmation();
+let settledMeta: DraftMeta | null = null;
+let settledBarSig: Uint8Array | null = null;
+let nextMetaRetryAt = 0;
+const completeRoster = (meta: DraftMeta | null) => !!meta?.self && new Set(enemiesFrom(meta.bar, meta.self)).size === 4;
 const rerollCounter = new RerollCounterReader();
 const recovery = new CardNameRecovery();
 let names: Record<string, string> = {};
@@ -114,9 +119,10 @@ let pendingSig: Uint8Array | null = null,
   pendingReads: CardRead[] = [],
   pendingChoice = 0;
 // Samples a coarse grid inside each region (not the whole frame: the rest was never copied).
-const frameSig = (regions: FrameRegion[]): Uint8Array => {
+const frameSig = (regions: FrameRegion[], inventory: ReturnType<typeof inventoryRegions>): Uint8Array => {
   const out: number[] = [];
   for (const r of regions) {
+    if (inventory.some((i) => i.x === r.x && i.y === r.y && i.width === r.width && i.height === r.height)) continue;
     const d = new Uint8ClampedArray(r.buffer);
     for (let y = 0; y < r.height; y += SIG_STEP)
       for (let x = 0; x < r.width; x += SIG_STEP) {
@@ -125,6 +131,16 @@ const frameSig = (regions: FrameRegion[]): Uint8Array => {
       }
   }
   return Uint8Array.from(out);
+};
+const inventorySignature = (img: ReturnType<typeof pasteRegions>, regions: ReturnType<typeof inventoryRegions>) => {
+  let hash = 2166136261;
+  for (const r of regions)
+    for (let y = r.y; y < r.y + r.height; y += 4)
+      for (let x = r.x; x < r.x + r.width; x += 4) {
+        const i = (y * img.width + x) * 4;
+        for (let c = 0; c < 3; c++) hash = Math.imul(hash ^ img.data[i + c]!, 16777619);
+      }
+  return `${img.width}:${img.height}:${hash >>> 0}`;
 };
 // Reused across frames (same regions every time, so nothing stale survives); reallocated when the frame size changes.
 let frameBuf = new Uint8ClampedArray(0);
@@ -146,15 +162,23 @@ const sameSig = (a: Uint8Array | null, b: Uint8Array): boolean => {
 let wasShop = false; // the previous result was a draft frame: the next non-draft frame is re-checked quickly
 let acceptedRound = 0,
   acceptedChoice = 0;
+let previousBarSig: Uint8Array | null = null;
+let previousRound = 0;
 
 const forgetDraft = () => {
-  lastKey = acceptedKey = lastInv = sentInv = '';
+  lastKey = acceptedKey = '';
+  inventoryConfirmation.reset();
+  settledMeta = null;
+  settledBarSig = null;
+  nextMetaRetryAt = 0;
   rerollCounter.reset();
   recovery.reset();
   wasShop = false;
   settledSig = pendingSig = null;
   knownHero = null;
   acceptedRound = acceptedChoice = 0;
+  previousBarSig = null;
+  previousRound = 0;
 };
 // Dev builds only (`import.meta.env.DEV` is false in a production build, so this all folds away): milliseconds per
 // recogniser stage, sent back on each result for the page's perf summary.
@@ -266,14 +290,46 @@ self.addEventListener(
         return;
       }
       wasShop = true;
-      const sig = frameSig(msg.regions);
+      const inventoryRects = inventoryRegions(img.width, img.height);
+      const sig = frameSig(msg.regions, inventoryRects);
+      const bsig = barSig(img);
+      const rosterChanged = !!matchBar && !sameBar(matchBar.sig, bsig);
+      if (rosterChanged) knownHero = null;
+      const matchBoundary =
+        (!!previousBarSig && !sameBar(previousBarSig, bsig)) || (previousRound > 1 && labels.round === 1);
+      if (matchBoundary) inventoryConfirmation.reset();
+      previousBarSig = bsig;
+      if (labels.round > 0) previousRound = labels.round;
+      const inventorySig = `${inventorySignature(img, inventoryRects)}:${[...new Set(msg.prefer)].sort((a, b) => a - b).join(',')}`;
+      // Give the roster read one frame to catch up before publishing inventory from another match.
+      let inventory =
+        !matchBoundary && inventoryConfirmation.needsRead(inventorySig)
+          ? inventoryConfirmation.observe(
+              stage('inventory', () => readInventory(img, idx, msg.prefer)).map((r) => r.itemId),
+              inventorySig,
+            )
+          : null;
       if (
         acceptedKey &&
         acceptedKey === lastKey &&
         labels.choice === acceptedChoice &&
         (labels.round === 0 || labels.round === acceptedRound) &&
+        (!rosterChanged || (!!settledBarSig && sameBar(settledBarSig, bsig))) &&
         sameSig(settledSig, sig)
       ) {
+        let recoveredMeta = false;
+        if (!completeRoster(settledMeta) && performance.now() >= nextMetaRetryAt) {
+          settledMeta = stage('meta', () => readDraftMeta(img, idx, undefined, true));
+          nextMetaRetryAt = performance.now() + 500;
+          if (completeRoster(settledMeta)) {
+            matchBar = { bar: settledMeta.bar, self: settledMeta.self, sig: bsig };
+            knownHero = matchBar;
+            // Earlier inventory may precede a full roster read. Re-publish it after roster confirmation.
+            inventoryConfirmation.reset();
+            inventory = null;
+            recoveredMeta = true;
+          }
+        }
         pollRerolls(img);
         post({
           type: 'result',
@@ -282,9 +338,9 @@ self.addEventListener(
           choice: labels.choice,
           reads: settledReads,
           key: acceptedKey,
-          accepted: false,
-          meta: null,
-          inventory: null,
+          accepted: recoveredMeta,
+          meta: settledMeta,
+          inventory,
           ms: performance.now() - t0,
           stages,
         });
@@ -306,41 +362,29 @@ self.addEventListener(
       const seen = reads.filter((r) => r.present).length;
       const key = seen === 3 ? reads.map((r) => `${r.itemId}${r.enhanced ? '+' : ''}`).join(',') : '';
       let accepted = false,
-        meta: DraftMeta | null = null,
-        inventory: number[] | null = null;
+        meta: DraftMeta | null = null;
       if (key && key === lastKey) {
         // A new card set, or the ROUND / CHOICE label changed under the same cards (a stale label must not stand):
         // (re)accept, which re-reads the hero bar and labels once the screen has settled.
         const labelsChanged =
           key === acceptedKey &&
           (labels.choice !== acceptedChoice || (labels.round > 0 && labels.round !== acceptedRound));
-        if (key !== acceptedKey || labelsChanged) {
+        if (key !== acceptedKey || labelsChanged || rosterChanged) {
           acceptedKey = key;
           if (labels.round > 0) acceptedRound = labels.round;
           else if (labels.choice === 1 && acceptedChoice > 1) acceptedRound = Math.min(5, acceptedRound + 1);
           acceptedChoice = labels.choice;
           accepted = true;
-          const bsig = barSig(img);
           if (!knownHero && matchBar && sameBar(matchBar.sig, bsig)) knownHero = matchBar;
           meta = stage('meta', () => readDraftMeta(img, idx, knownHero ?? undefined, true));
-          if (meta.self) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
+          if (completeRoster(meta)) matchBar = { bar: meta.bar, self: meta.self, sig: bsig };
           // the hero bar is constant while the draft screen stays up; keep it until the screen closes (nonShopResult)
-          knownHero = meta.self ? { bar: meta.bar, self: meta.self } : null;
+          knownHero = completeRoster(meta) ? { bar: meta.bar, self: meta.self } : null;
+          settledMeta = meta;
+          settledBarSig = bsig;
+          nextMetaRetryAt = 0;
         }
-        // the inventory grid is only on the draft screen; accept a read once two frames agree
-        const inv: InventoryRead[] = stage('inventory', () => readInventory(img, idx, msg.prefer));
-        const ids = inv
-          .map((r) => r.itemId)
-          .filter(Boolean)
-          .sort((a, b) => a - b);
-        const ik = ids.join(',');
-        if (ik === lastInv && ik !== sentInv) {
-          sentInv = ik;
-          inventory = ids;
-        }
-        lastInv = ik;
       } else if (!key) {
-        lastInv = '';
         // A card is unreadable: the page may drop its advice (see BrawlView), so the same set must be accepted again
         // once all three cards read, or the advice would never come back.
         acceptedKey = '';
@@ -372,7 +416,11 @@ self.addEventListener(
 );
 
 const nonShopResult = (t0: number): FrameResult => {
-  lastKey = acceptedKey = lastInv = sentInv = '';
+  lastKey = acceptedKey = '';
+  inventoryConfirmation.reset();
+  settledMeta = null;
+  settledBarSig = null;
+  nextMetaRetryAt = 0;
   settledSig = pendingSig = null;
   knownHero = null;
   acceptedRound = acceptedChoice = 0;
