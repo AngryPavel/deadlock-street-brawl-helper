@@ -28,6 +28,45 @@ const styledPanel = (value: TeamWinRateEdge) => (
 );
 
 describe('TeamHeroWinRatePanel', () => {
+  it('keeps the complete team average visible when the other side is unread and reveals the difference after completion', () => {
+    const partial: TeamWinRateEdge = {
+      ...edge,
+      ownWinRate: null,
+      deltaPp: null,
+      ownHeroes: edge.ownHeroes.map((h, i) =>
+        i === 1 ? { heroId: 0, name: 'Reading hero', winRate: null, unavailable: 'reading-hero' } : h,
+      ),
+    };
+    const { container, rerender } = render(<TeamHeroWinRatePanel visible edge={partial} />);
+    expect(screen.getByRole('region', { name: 'Ours' }).textContent).toContain('Ours avgUnavailable');
+    expect(screen.getByRole('region', { name: 'Enemy' }).textContent).toContain('Enemy avg51.0%');
+    expect(screen.getByRole('complementary').dataset.direction).toBe('neutral');
+    expect(container.textContent).toContain('DifferenceUnavailable');
+    rerender(
+      <TeamHeroWinRatePanel
+        visible
+        edge={{
+          ...partial,
+          ownHeroes: partial.enemyHeroes,
+          enemyHeroes: partial.ownHeroes,
+          ownWinRate: partial.enemyWinRate,
+          enemyWinRate: null,
+        }}
+      />,
+    );
+    expect(screen.getByRole('region', { name: 'Ours' }).textContent).toContain('Ours avg51.0%');
+    expect(screen.getByRole('region', { name: 'Enemy' }).textContent).toContain('Enemy avgUnavailable');
+    for (const invalid of [
+      { ...partial, ownWinRate: 0.53 },
+      { ...partial, deltaPp: 2 },
+    ]) {
+      rerender(<TeamHeroWinRatePanel visible edge={invalid} />);
+      expect(container.childElementCount).toBe(0);
+    }
+    rerender(<TeamHeroWinRatePanel visible edge={edge} />);
+    expect(container.textContent).toContain('Difference+2.0 pp');
+    expect(screen.getByRole('complementary').dataset.direction).toBe('positive');
+  });
   it('shows known rates and distinct unread portrait/data states in a neutral partial panel', () => {
     const partial = {
       ...edge,

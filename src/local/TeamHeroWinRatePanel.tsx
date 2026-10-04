@@ -56,8 +56,9 @@ export function TeamHeroWinRatePanel({
   )
     return null;
   if (
-    [...edge.ownHeroes, ...edge.enemyHeroes].some((h) => h.winRate === null) &&
-    (edge.ownWinRate !== null || edge.enemyWinRate !== null || edge.deltaPp !== null)
+    (edge.ownHeroes.some((h) => h.winRate === null) && edge.ownWinRate !== null) ||
+    (edge.enemyHeroes.some((h) => h.winRate === null) && edge.enemyWinRate !== null) ||
+    (edge.deltaPp !== null && (edge.ownWinRate === null || edge.enemyWinRate === null))
   )
     return null;
   const delta = edge.deltaPp;

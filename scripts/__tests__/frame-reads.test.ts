@@ -28,8 +28,8 @@ const GOLDEN: Record<string, unknown> = {
   'draft-r2c1': {
     rc: [2, 1],
     reads: ['381961617', '1235347618', '395944548'],
-    self: 0,
-    bar: [11, 0, 60, 63, 19, 67, 79, 52],
+    self: 1,
+    bar: [11, 1, 60, 63, 19, 67, 79, 52],
   },
   'draft-r2c3-reroll': {
     rc: [2, 3],

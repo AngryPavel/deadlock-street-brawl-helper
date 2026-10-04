@@ -115,10 +115,9 @@ export function teamWinRate(
     enemy = rates(ownLeft ? roster.right : roster.left);
   const ownHeroes = own as TeamHeroWinRate[],
     enemyHeroes = enemy as TeamHeroWinRate[];
-  const complete = [...ownHeroes, ...enemyHeroes].every((h) => h.winRate !== null);
   const mean = (xs: TeamHeroWinRate[]) => xs.reduce((sum, h) => sum + h.winRate!, 0) / 4;
-  const ownWinRate = complete ? mean(ownHeroes) : null,
-    enemyWinRate = complete ? mean(enemyHeroes) : null;
+  const ownWinRate = ownHeroes.every((h) => h.winRate !== null) ? mean(ownHeroes) : null,
+    enemyWinRate = enemyHeroes.every((h) => h.winRate !== null) ? mean(enemyHeroes) : null;
   const date = (unix: number) =>
     Number.isFinite(unix) && unix > 0 ? new Date(unix * 1000).toISOString().slice(0, 10) : null;
   const start = date(data?.min_unix_timestamp ?? 0),

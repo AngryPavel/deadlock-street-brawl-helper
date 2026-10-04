@@ -63,6 +63,14 @@ export interface DecodedIndex {
   twins: Map<number, number[]>;
   heroIds: number[];
   heroPixels: Float32Array[];
+  heroForeground?: HeroForegroundReference[];
+}
+interface HeroForegroundReference {
+  source: Uint8Array;
+  mask: Float32Array;
+  offsets: Int32Array;
+  count: number;
+  pixels: Float32Array;
 }
 
 const b64 = (s: string): Uint8Array => {
@@ -124,6 +132,21 @@ export function decodeIconIndex(idx: IconIndex): DecodedIndex {
     twins,
     heroIds,
     heroPixels: heroIds.map((id) => normalise(b64(idx.heroes![id]), idx.size, cmask)),
+    heroForeground: heroIds.map((id) => {
+      const pixels = b64(idx.heroes![id]);
+      const mask = new Float32Array(cmask.length);
+      // Both catalog builders flatten transparent portrait art on #3a4a58. Team-colored
+      // in-game circles are not part of the face and cannot be independent identity evidence.
+      for (let i = 0; i < mask.length; i++)
+        mask[i] =
+          cmask[i] &&
+          Math.max(Math.abs(pixels[i * 3] - 58), Math.abs(pixels[i * 3 + 1] - 74), Math.abs(pixels[i * 3 + 2] - 88)) >
+            10
+            ? 1
+            : 0;
+      const offsets = offsetsOf(mask);
+      return { source: pixels, mask, offsets, count: offsets.length, pixels: normalise(pixels, idx.size, mask) };
+    }),
   };
 }
 
@@ -614,8 +637,78 @@ function matchHero(img: RGBImage, index: DecodedIndex, cx: number, cy: number, d
       }
   }
   best.margin = best.score - second;
-  if (best.score < MIN_HERO_SCORE || best.margin < MIN_HERO_MARGIN) best.heroId = 0;
+  if (best.score < MIN_HERO_SCORE || best.margin < MIN_HERO_MARGIN) {
+    best.heroId = 0;
+    return matchHeroForeground(img, index, cx, cy, diameter) ?? best;
+  }
   return best;
+}
+
+/** One bounded alternate for unread portraits; admitted primary identities never enter this path. */
+function matchHeroForeground(
+  img: RGBImage,
+  index: DecodedIndex,
+  cx: number,
+  cy: number,
+  diameter: number,
+): HeroMatch | null {
+  if (!index.heroForeground?.length) return null;
+  const { sx } = hudLayout(img.width, img.height);
+  const step = Math.max(2, Math.round(HERO_BAR.step * sx));
+  // Round the alternate search out by less than one step, keeping its symmetric budget fixed.
+  const steps = Math.ceil((HERO_BAR.search * sx) / step);
+  const search = steps * step;
+  const scales = [0.8, ...HERO_BAR.scales];
+  const circleCount = offsetsOf(circleMask(index.size)).length;
+  const references = index.heroForeground
+    .map((reference, k) => ({ reference, k }))
+    .filter(({ reference }) => reference.count >= circleCount / 2);
+  if (!references.length) return null;
+  const reach = (diameter * Math.max(...scales)) / 2 + search + 2;
+  const ig = integralOf(img, cx - reach, cy - reach, cx + reach, cy + reach);
+  const scores = new Float64Array(index.heroIds.length).fill(-1);
+  for (const scale of scales) {
+    const edge = diameter * scale;
+    // Integer step counts include both endpoints; fractional screen scaling cannot lose one side.
+    for (let iy = -steps; iy <= steps; iy++)
+      for (let ix = -steps; ix <= steps; ix++) {
+        const pixels = sampleFast(img, ig, cx - edge / 2 + ix * step, cy - edge / 2 + iy * step, edge, index.size);
+        for (const { reference, k } of references) {
+          const v = normalise(pixels, index.size, reference.mask);
+          scores[k] = Math.max(scores[k], nccMasked(v, reference.pixels, reference.count, reference.offsets));
+        }
+      }
+  }
+  const ranked = Array.from(scores, (score, k) => ({ heroId: index.heroIds[k], score })).sort(
+    (a, b) => b.score - a.score,
+  );
+  const best = ranked[0];
+  if (!best) return null;
+  const margin = best.score - (ranked[1]?.score ?? -1);
+  if (best.score < MIN_HERO_SCORE || margin < MIN_HERO_MARGIN) return null;
+  // Candidate masks can cover different amounts of face. Verify uniqueness again with the winner's
+  // one fixed mask shared by every catalog hero, including references with too little foreground.
+  const winner = index.heroForeground[index.heroIds.indexOf(best.heroId)];
+  const common = index.heroForeground.map((reference) => normalise(reference.source, index.size, winner.mask));
+  const commonScores = new Float64Array(index.heroIds.length).fill(-1);
+  for (const scale of scales) {
+    const edge = diameter * scale;
+    for (let iy = -steps; iy <= steps; iy++)
+      for (let ix = -steps; ix <= steps; ix++) {
+        const pixels = sampleFast(img, ig, cx - edge / 2 + ix * step, cy - edge / 2 + iy * step, edge, index.size);
+        const v = normalise(pixels, index.size, winner.mask);
+        for (let k = 0; k < common.length; k++)
+          commonScores[k] = Math.max(commonScores[k], nccMasked(v, common[k], winner.count, winner.offsets));
+      }
+  }
+  const verified = Array.from(commonScores, (score, k) => ({ heroId: index.heroIds[k], score })).sort(
+    (a, b) => b.score - a.score,
+  );
+  const first = verified[0];
+  const commonMargin = first.score - (verified[1]?.score ?? -1);
+  return first.heroId === best.heroId && first.score >= MIN_HERO_SCORE && commonMargin >= MIN_HERO_MARGIN
+    ? { ...first, margin: Math.min(margin, commonMargin) }
+    : null;
 }
 
 /** Reads the eight portraits; heroId is 0 for a slot that could not be read. */

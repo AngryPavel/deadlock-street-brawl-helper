@@ -60,7 +60,7 @@ describe('team average hero win rates', () => {
           { ...data, heroes: data.heroes.map((h) => (h.hero_id === 8 ? { ...h, ...patch } : h)) },
           heroes,
         ),
-      ).toMatchObject({ ownWinRate: null, enemyWinRate: null, deltaPp: null });
+      ).toMatchObject({ ownWinRate: 0.6, enemyWinRate: null, deltaPp: null });
     expect(teamWinRate(roster, { ...data, heroes: data.heroes.slice(0, 7) }, heroes)?.enemyHeroes[3]).toMatchObject({
       name: 'Kelvin',
       winRate: null,
@@ -76,7 +76,7 @@ describe('team average hero win rates', () => {
         data,
         heroes.map((h) => (h.id === 8 ? { ...h, name: ' ' } : h)),
       ),
-    ).toMatchObject({ ownWinRate: null, enemyWinRate: null, deltaPp: null });
+    ).toMatchObject({ ownWinRate: 0.6, enemyWinRate: null, deltaPp: null });
     expect(teamWinRate({ ...roster, self: 0 }, data, heroes)).toBeNull();
     expect(teamWinRate(roster, null, heroes)?.ownHeroes[0]).toMatchObject({
       name: 'Abrams',
@@ -109,7 +109,12 @@ describe('team average hero win rates', () => {
     const edge = teamWinRate(confirmation.value, data, heroes)!;
     expect(edge.ownHeroes[3]).toEqual({ heroId: 0, name: 'Reading hero', winRate: null, unavailable: 'reading-hero' });
     expect(edge.ownHeroes[0]!.winRate).toBe(0.6);
-    expect(edge).toMatchObject({ ownWinRate: null, enemyWinRate: null, deltaPp: null });
+    expect(edge).toMatchObject({ ownWinRate: null, enemyWinRate: 0.4, deltaPp: null });
+    expect(teamWinRate({ ...partial, self: 5 }, data, heroes)).toMatchObject({
+      ownWinRate: 0.4,
+      enemyWinRate: null,
+      deltaPp: null,
+    });
     confirmation.observe(meta(roster));
     confirmation.observe(meta(roster));
     expect(confirmation.complete).toBe(true);

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
 import { readFileSync } from 'node:fs';
-import { draftRegions, inventoryRegions, type CardRead } from '../recognise';
+import { draftRegions, inventoryRegions, HERO_BAR, hudLayout, type CardRead } from '../recognise';
 import type { FrameRegion, FrameResult, WorkerIn, WorkerOut } from '../worker';
 import type { IconIndex } from '../types';
 import { MatchMemory } from '../../local/matchMemory';
@@ -666,13 +666,23 @@ describe('worker confirmed state', () => {
     }
     expect(state.cardReader).toHaveBeenCalledTimes(1);
   });
-  it('publishes the actual first-round partial roster while every item remains blocked and keeps retrying the unread portrait', async () => {
+  it('publishes a partial actual first-round roster while items remain blocked and keeps retrying a blanked portrait', async () => {
     state.actualSelf = true;
     state.actualLabels = true;
     state.round = 1;
     state.choice = 3;
     state.cardScore = 0.5;
     await actualCardPixels('round1-choice3');
+    // The real fourth teammate is Abrams, now recovered by the foreground fallback.
+    // Explicitly remove his portrait to keep this an independent unknown-slot retry regression.
+    const { sx, sy, offsetX } = hudLayout(frameWidth, frameHeight);
+    const cx = offsetX + HERO_BAR.left[3] * sx,
+      cy = HERO_BAR.cy * sy;
+    const bar = regions.find((region) => region.y === 0)!;
+    const pixels = new Uint8Array(bar.buffer);
+    for (let y = Math.max(0, Math.floor(cy - 54 * sx)); y < cy + 54 * sx; y++)
+      for (let x = Math.floor(cx - 54 * sx); x < cx + 54 * sx; x++)
+        pixels.set([58, 74, 88, 255], ((y - bar.y) * bar.width + x - bar.x) * 4);
     for (let i = 0; i < 4; i++)
       expect(await frame(500)).toMatchObject({ accepted: false, pending: true, reads: [], key: '' });
     const identities = outputs.filter((m): m is FrameResult => m.type === 'result' && !!m.identityOnly);
@@ -821,7 +831,7 @@ describe('worker confirmed state', () => {
     state.choice = 2;
     expect((await accept()).meta?.self).toBe(76);
   });
-  it('reacquires player and partial team after F8 on actual first preparation without reading any item cards', async () => {
+  it('reacquires player and full team after F8 on actual first preparation without reading any item cards', async () => {
     await actualCardPixels('round1-choice3');
     regions = regions.filter((r) => r.y === 0);
     const file = 'src/local/__tests__/assets/round-countdown-draft-choice3';
@@ -850,7 +860,7 @@ describe('worker confirmed state', () => {
       shop: false,
       accepted: false,
       meta: { self: 76 },
-      teamRoster: { self: 76, left: [76, 65, 67, 0], right: [79, 27, 84, 1] },
+      teamRoster: { self: 76, left: [76, 65, 67, 6], right: [79, 27, 84, 1] },
     });
     expect(state.cardReader).not.toHaveBeenCalled();
     expect(state.nameReads).not.toHaveBeenCalled();
