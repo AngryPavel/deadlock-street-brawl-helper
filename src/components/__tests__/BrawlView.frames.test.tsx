@@ -169,8 +169,23 @@ it('clears old item advice after a debounced closed screen and before the abilit
   await deliver({ ...tooltip, choice: 3 });
   expect(sent.at(-1)?.advice?.ranked).toHaveLength(3);
   expect(sent.at(-1)?.advice?.choice).toBe(2);
+  await deliver({ ...tooltip, choice: 3, pending: true, pendingTransition: true, reads: [], key: '' });
+  expect(sent.at(-1)?.advice).toBeNull();
+  expect(sent.at(-1)?.reads).toEqual([]);
+  expect(sent.at(-1)?.bestId).toBeNull();
   await deliver({ ...complete, choice: 3, transition: 'choice', meta: { ...complete.meta!, choice: 3 } });
   expect(sent.at(-1)?.advice?.choice).toBe(3);
+  expect(sent.at(-1)?.advice?.rerollsRemaining).toBe(1);
+  await deliver({ ...tooltip, choice: 3, pending: true, pendingTransition: true, reads: [], key: '' });
+  expect(sent.at(-1)?.advice).toBeNull();
+  await deliver({
+    ...complete,
+    choice: 3,
+    transition: 'reacquire',
+    meta: { ...complete.meta!, choice: 3, rerollsRemaining: -1 },
+  });
+  expect(sent.at(-1)?.advice?.choice).toBe(3);
+  expect(sent.at(-1)?.advice?.rerollsRemaining).toBe(1);
   const nextRound = {
     ...complete,
     round: 4,

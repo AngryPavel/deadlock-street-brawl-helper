@@ -29,6 +29,14 @@ The API does not provide verified enhanced properties. The inherited fallback as
 
 The default distribution is explicitly uncalibrated uniform sampling within eligible tier pools. It does not infer actual drop chances from purchases. Current slot flags persist in the model; unseen future choices use zero rare/enhanced probability in the default fallback. These zeros define an unverified scenario, not measured frequencies or a claim that future bonuses cannot occur. An injected distribution can replace those assumptions. Future scoring holds the current owned/enemy context fixed; it does not jointly update the inventory after every hypothetical future pick or model changing opponents. Distribution status and assumptions are part of the advice contract.
 
+## Screen state limits
+
+Confirmed choice/round advances and counter decrements authorize fresh offer reads. The previous advice is hidden while the complete three-card tuple and independently sampled icon cores settle across fresh frames. Initial reads also settle before publication. These timing checks are conservative heuristics; elapsed time alone cannot turn missing cards into a valid offer.
+
+A sustained contradiction from three strong direct icon matches can correct a provisional lock without recording a reroll or clearing the confirmed counter. Partial tooltip reads cannot trigger that exception. Initial and authorized transitions preserve the upstream recognizer's `present` contract, including valid low-score matches; OCR remains a fallback for missing cards. Late corrections require stronger evidence and are not guaranteed for every obscured or low-score card.
+
+Recognition corrections do not add new drop observations. A provisional observation already flushed to the bounded local journal is not rewritten retrospectively. Experimental empirical distributions therefore still need reviewed measurements; the default scorer does not consume that journal.
+
 ## Reproducible evaluation
 
 `evaluation/scenarios.json` contains eight fixed audit regression scenarios: four development cases and four held-aside structural cases. Their `observation` metadata explicitly says `synthetic-regression`, with null match IDs and observation timestamps. They are not independently observed matches and have no human expert labels. The split is useful for regression discipline; it does not establish temporal generalization or independent expert agreement. No weights were fitted to these cases.

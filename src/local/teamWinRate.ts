@@ -1,5 +1,6 @@
 import type { DraftMeta } from '../brawl/recognise';
 import type { BrawlTierListData } from '../brawl/tierlist';
+import type { Hero } from '../types';
 
 export interface TeamRoster {
   self: number;
@@ -7,10 +8,17 @@ export interface TeamRoster {
   right: number[];
 }
 export interface TeamWinRateEdge {
+  ownHeroes: TeamHeroWinRate[];
+  enemyHeroes: TeamHeroWinRate[];
   ownWinRate: number;
   enemyWinRate: number;
   deltaPp: number;
   window: string;
+}
+export interface TeamHeroWinRate {
+  heroId: number;
+  name: string;
+  winRate: number;
 }
 
 /** Feed independent full portrait reads, never a cached metadata replay. */
@@ -48,28 +56,37 @@ const validRoster = (r: TeamRoster) =>
   [...r.left, ...r.right].includes(r.self);
 
 /** Unweighted mean of four marginal hero win rates, including the player's hero. */
-export function teamWinRate(roster: TeamRoster | null, data: BrawlTierListData | null): TeamWinRateEdge | null {
+export function teamWinRate(
+  roster: TeamRoster | null,
+  data: BrawlTierListData | null,
+  heroes: Pick<Hero, 'id' | 'name'>[],
+): TeamWinRateEdge | null {
   if (!roster || !data || !validRoster(roster) || data.game_mode !== 'street_brawl') return null;
   const byId = new Map(data.heroes.map((h) => [h.hero_id, h]));
+  const names = new Map(heroes.map((h) => [h.id, h.name]));
   const rates = (ids: number[]) =>
     ids.map((id) => {
       const row = byId.get(id);
-      return row &&
+      const name = names.get(id)?.trim();
+      return name &&
+        row &&
         Number.isFinite(row.matches) &&
         row.matches > 0 &&
         Number.isFinite(row.wins) &&
         row.wins >= 0 &&
         row.wins <= row.matches
-        ? row.wins / row.matches
+        ? { heroId: id, name, winRate: row.wins / row.matches }
         : null;
     });
   const ownLeft = roster.left.includes(roster.self);
   const own = rates(ownLeft ? roster.left : roster.right),
     enemy = rates(ownLeft ? roster.right : roster.left);
   if ([...own, ...enemy].some((n) => n === null)) return null;
-  const mean = (xs: (number | null)[]) => xs.reduce<number>((sum, n) => sum + n!, 0) / 4;
-  const ownWinRate = mean(own),
-    enemyWinRate = mean(enemy);
+  const ownHeroes = own as TeamHeroWinRate[],
+    enemyHeroes = enemy as TeamHeroWinRate[];
+  const mean = (xs: TeamHeroWinRate[]) => xs.reduce((sum, h) => sum + h.winRate, 0) / 4;
+  const ownWinRate = mean(ownHeroes),
+    enemyWinRate = mean(enemyHeroes);
   const date = (unix: number) =>
     Number.isFinite(unix) && unix > 0 ? new Date(unix * 1000).toISOString().slice(0, 10) : null;
   const start = date(data.min_unix_timestamp),
@@ -82,5 +99,5 @@ export function teamWinRate(roster: TeamRoster | null, data: BrawlTierListData |
     : fetched
       ? `Fetched ${fetched}`
       : 'Street Brawl snapshot';
-  return { ownWinRate, enemyWinRate, deltaPp: (ownWinRate - enemyWinRate) * 100, window };
+  return { ownHeroes, enemyHeroes, ownWinRate, enemyWinRate, deltaPp: (ownWinRate - enemyWinRate) * 100, window };
 }

@@ -206,7 +206,7 @@ export function BrawlView({
   const teamEdgeRef = useRef<ReturnType<typeof teamWinRate>>(null);
   const tierDataRef = useRef(tierData);
   tierDataRef.current = tierData;
-  teamEdgeRef.current = teamWinRate(teamRosterRef.current, tierData);
+  teamEdgeRef.current = teamWinRate(teamRosterRef.current, tierData, heroes);
   useEffect(() => {
     j<BrawlTierListData>('analytics/brawl/tier-list.json')
       .then(setTierData)
@@ -1036,10 +1036,24 @@ export function BrawlView({
           setOwned(after);
         }
       }
+      if (r.pendingTransition) {
+        frameGate.invalidate();
+        prevCardsRef.current = cardsRef.current.length ? cardsRef.current : prevCardsRef.current;
+        cardsRef.current = [];
+        readsRef.current = [];
+        stableRef.current = emptyStable();
+        rankedRef.current = [];
+        rerollRef.current = null;
+        overlayAdviceRef.current = null;
+        pendingOfferRef.current = null;
+        setCards([]);
+        pushOverlay();
+        return;
+      }
       if (!frameGate.publish(r, performance.now())) return;
       if (r.teamRoster && r.shop) {
         teamRosterRef.current = r.teamRoster;
-        teamEdgeRef.current = teamWinRate(r.teamRoster, tierDataRef.current);
+        teamEdgeRef.current = teamWinRate(r.teamRoster, tierDataRef.current, heroes);
       }
       if (!r.shop) {
         // The item panel closes after the short screen debounce; the ability tip has its own longer debounce.
@@ -1094,11 +1108,19 @@ export function BrawlView({
         const patch = offerPatchRef.current;
         const layout = configRef.current?.item_draft_rounds_per_game_round[roundRef.current - 1]?.item_draft_rounds;
         const label = `${roundRef.current}:${choiceRef.current}`;
-        if (patch && meta.self && layout && !testModeRef.current && !window.brawlAPI?.isE2E) {
+        if (
+          r.transition !== 'reacquire' &&
+          r.transition !== 'metadata' &&
+          patch &&
+          meta.self &&
+          layout &&
+          !testModeRef.current &&
+          !window.brawlAPI?.isE2E
+        ) {
           const offerCards = journalCards(offers, byId, layout[choiceRef.current - 1]);
           if (offerCards) {
             const generation =
-              nextRerollLabelRef.current === label
+              r.transition === 'reroll' || nextRerollLabelRef.current === label
                 ? 'reroll'
                 : lastOfferLabelRef.current && lastOfferLabelRef.current !== label
                   ? 'initial'

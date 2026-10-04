@@ -41,7 +41,14 @@ export class CardNameRecovery {
         if (!id) return r;
         const a = anchors[i]!;
         const match = { ...r.match, itemId: id, x: a.cx - a.icon / 2, y: a.cy - a.icon / 2, edge: a.icon };
-        return { ...r, itemId: id, present: true, tier: tiers[id] ?? 0, match, ...readMarkers(img, match) };
+        return {
+          ...r,
+          itemId: id,
+          present: true,
+          tier: tiers[id] ?? 0,
+          match,
+          ...readMarkers(img, match),
+        };
       }),
     );
     return generation === this.generation ? recovered : reads;

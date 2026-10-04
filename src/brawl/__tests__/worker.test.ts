@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import sharp from 'sharp';
+import { readFileSync } from 'node:fs';
 import { draftRegions, inventoryRegions, type CardRead } from '../recognise';
 import type { FrameRegion, FrameResult, WorkerIn, WorkerOut } from '../worker';
 import type { IconIndex } from '../types';
@@ -16,6 +17,10 @@ const state = vi.hoisted(() => ({
   team: [1],
   cards: [101, 102, 103],
   actualLabels: false,
+  actualCards: false,
+  cardScore: 0.99,
+  cardScores: [] as number[],
+  visible: 3,
   inventoryReader: vi.fn(),
   cardReader: vi.fn(),
   metadataReader: vi.fn(),
@@ -24,16 +29,26 @@ vi.mock('../recognise', async (original) => {
   const actual = await original<typeof import('../recognise')>();
   return {
     ...actual,
-    decodeIconIndex: () => ({}),
+    decodeIconIndex: actual.decodeIconIndex,
     readRoundChoice: (img: import('../recognise').RGBImage) =>
       state.actualLabels ? actual.readRoundChoice(img) : { round: state.round, choice: state.choice },
     readInventory: () => {
       state.inventoryReader();
       return state.inventory.map((itemId, slot) => ({ itemId, slot }));
     },
-    readDraftScreen: () => {
+    readDraftScreen: (
+      img: import('../recognise').RGBImage,
+      index: import('../recognise').DecodedIndex,
+      tierOf: (id: number) => number,
+    ) => {
       state.cardReader();
-      return state.cards.map((itemId) => ({ itemId, present: true, enhanced: false })) as CardRead[];
+      if (state.actualCards) return actual.readDraftScreen(img, index, tierOf);
+      return state.cards.map((itemId, slot) => ({
+        itemId,
+        present: slot < state.visible,
+        enhanced: false,
+        match: { itemId, score: state.cardScores[slot] ?? state.cardScore, margin: 0.3 },
+      })) as CardRead[];
     },
     readDraftMeta: () => {
       state.metadataReader();
@@ -68,12 +83,46 @@ vi.mock('../../local/rerollCounter', () => ({
 let handle: (ev: MessageEvent<WorkerIn>) => Promise<void>;
 let outputs: WorkerOut[];
 let regions: FrameRegion[];
+let frameWidth = 2560,
+  frameHeight = 1440;
 const frame = async () => {
+  vi.advanceTimersByTime(250);
   const before = outputs.length;
   await handle({
-    data: { type: 'frame', width: 2560, height: 1440, regions, prefer: [] },
+    data: { type: 'frame', width: frameWidth, height: frameHeight, regions, prefer: [] },
   } as unknown as MessageEvent<WorkerIn>);
-  return outputs.slice(before).find((m): m is FrameResult => m.type === 'result')!;
+  return outputs
+    .slice(before)
+    .filter((m): m is FrameResult => m.type === 'result')
+    .at(-1)!;
+};
+const actualCardPixels = async (name: 'choice2' | 'choice3') => {
+  const spec = JSON.parse(readFileSync(`src/brawl/__tests__/assets/settled-${name}.json`, 'utf8')) as {
+    width: number;
+    height: number;
+    regions: (FrameRegion & { top: number })[];
+  };
+  frameWidth = spec.width;
+  frameHeight = spec.height;
+  regions = await Promise.all(
+    spec.regions.map(async (r) => ({
+      ...r,
+      buffer: new Uint8Array(
+        await sharp(`src/brawl/__tests__/assets/settled-${name}.webp`)
+          .extract({ left: 0, top: r.top, width: r.width, height: r.height })
+          .ensureAlpha()
+          .raw()
+          .toBuffer(),
+      ).buffer,
+    })),
+  );
+};
+const accept = async () => {
+  for (let i = 0; i < 10; i++) {
+    const r = await frame();
+    if (r.accepted) return r;
+  }
+  throw new Error('Offer never settled');
 };
 const inventoryPixels = (value: number) => {
   const inventory = inventoryRegions(2560, 1440)[0]!;
@@ -107,10 +156,16 @@ beforeEach(async () => {
   state.team = [1];
   state.cards = [101, 102, 103];
   state.actualLabels = false;
+  state.actualCards = false;
+  state.cardScore = 0.99;
+  state.cardScores = [];
+  state.visible = 3;
   state.inventoryReader.mockClear();
   state.cardReader.mockClear();
   state.metadataReader.mockClear();
   outputs = [];
+  frameWidth = 2560;
+  frameHeight = 1440;
   regions = draftRegions(2560, 1440).map((r) => ({ ...r, buffer: new ArrayBuffer(r.width * r.height * 4) }));
   vi.stubGlobal('self', {
     addEventListener: (_: string, listener: typeof handle) => {
@@ -120,7 +175,12 @@ beforeEach(async () => {
   });
   await import('../worker');
   await handle({
-    data: { type: 'init', index: {} as IconIndex, tiers: {}, intervalMs: 100 },
+    data: {
+      type: 'init',
+      index: JSON.parse(readFileSync('public/data/brawl-icons.json', 'utf8')) as IconIndex,
+      tiers: Object.fromEntries(items.map((i) => [i.id, i.item_tier])),
+      intervalMs: 100,
+    },
   } as MessageEvent<WorkerIn>);
 });
 afterEach(() => {
@@ -130,6 +190,65 @@ afterEach(() => {
 });
 
 describe('worker confirmed state', () => {
+  it('publishes no initial recommendation while any card is incomplete, then waits for the complete fresh tuple', async () => {
+    state.visible = 2;
+    for (let i = 0; i < 4; i++)
+      expect(await frame()).toMatchObject({ pending: true, reads: [], key: '', accepted: false });
+    state.visible = 3;
+    expect(await frame()).toMatchObject({ pending: true, reads: [], key: '', accepted: false });
+    expect(await frame()).toMatchObject({ pending: true, reads: [], key: '', accepted: false });
+    expect(await frame()).toMatchObject({ accepted: true, key: '101,102,103' });
+  });
+  it('preserves legitimate low-score present matches on initial and authorised choice reads while rejecting late weak correction', async () => {
+    state.cardScores = [0.643, 0.522, 0.818];
+    expect(await accept()).toMatchObject({ accepted: true, key: '101,102,103' });
+    state.choice = 2;
+    state.cards = [201, 202, 203];
+    cardPixels(255);
+    expect(await accept()).toMatchObject({ accepted: true, transition: 'choice', key: '201,202,203' });
+    vi.advanceTimersByTime(5000);
+    state.cards = [301, 302, 303];
+    cardPixels(80);
+    for (let i = 0; i < 5; i++) expect(await frame()).toMatchObject({ accepted: false, key: '201,202,203' });
+  });
+  it('waits for complete stable pixels, then corrects real C2/C3 screen cards after old same-ID label animation beyond the correction window', async () => {
+    state.actualCards = true;
+    state.round = 1;
+    state.choice = 1;
+    await actualCardPixels('choice3');
+    expect(await frame()).toMatchObject({ pending: true, accepted: false, reads: [], key: '' });
+    expect(await frame()).toMatchObject({ pending: true, accepted: false, reads: [], key: '' });
+    const first = await accept();
+    expect(first.reads.map((r) => r.itemId)).toEqual(
+      ['Fortitude', 'Lifestrike', 'Veil Walker'].map((n) => itemByName(n).id),
+    );
+    state.choice = 2;
+    await frame();
+    const settling = await frame();
+    expect(settling).toMatchObject({ pendingTransition: true, accepted: false, reads: [], key: '' });
+    for (let i = 0; i < 3; i++) expect((await frame()).accepted).toBe(false);
+    // A genuine identical-ID next offer can eventually settle, but this never makes later clear pixels immutable.
+    await accept();
+    vi.advanceTimersByTime(5000);
+    await actualCardPixels('choice2');
+    const start = await frame();
+    expect(start).toMatchObject({ pendingTransition: true, reads: [], accepted: false });
+    const corrected = await accept();
+    expect(corrected.transition).toBe('reacquire');
+    expect(corrected.reads.map((r) => r.itemId)).toEqual(
+      ['Mystic Shot', 'Long Range', 'Fortitude'].map((n) => itemByName(n).id),
+    );
+    expect(corrected.reads[2]!.rare).toBe(true);
+    expect(corrected.meta?.rerollsRemaining).toBe(1);
+    state.choice = 3;
+    await actualCardPixels('choice3');
+    expect((await frame()).accepted).toBe(false);
+    expect((await frame()).pendingTransition).toBe(true);
+    const last = await accept();
+    expect(last.reads.map((r) => r.itemId)).toEqual(first.reads.map((r) => r.itemId));
+    expect(last).toMatchObject({ round: 1, choice: 3, transition: 'choice' });
+    expect(last.meta?.rerollsRemaining).toBe(1);
+  });
   it('retains full capture and the committed offer when a tooltip hides the choice label but an unchanged known card remains', async () => {
     for (const region of regions.slice(0, 3)) {
       const pixels = new Uint8Array(region.buffer);
@@ -141,8 +260,7 @@ describe('worker confirmed state', () => {
           pixels[n + 3] = 255;
         }
     }
-    await frame();
-    const committed = await frame();
+    const committed = await accept();
     state.choice = 0;
     for (let i = 0; i < 3; i++) {
       vi.advanceTimersByTime(5000);
@@ -154,13 +272,13 @@ describe('worker confirmed state', () => {
   it('publishes the full team only after two independent portrait reads and caches it through tooltip corruption', async () => {
     state.round = 1;
     state.team = [1, 10, 11, 12];
-    await frame();
-    expect((await frame()).teamRoster).toBeNull();
+    expect((await accept()).teamRoster).toBeNull();
     const confirmed = await frame();
     expect(confirmed.teamRoster).toEqual({ self: 1, left: state.team, right: state.foes });
     expect(state.metadataReader).toHaveBeenCalledTimes(2);
     state.team = [1, 0, 0, 0];
     state.cards = [201, 202, 203];
+    state.cardScore = 0.6;
     cardPixels(255);
     for (let i = 0; i < 3; i++) expect((await frame()).teamRoster).toEqual(confirmed.teamRoster);
     expect(state.metadataReader).toHaveBeenCalledTimes(2);
@@ -169,10 +287,10 @@ describe('worker confirmed state', () => {
     expect((await frame()).teamRoster).toBeNull();
   });
   it('holds the committed offer and known count through repeated foreign cards and false labels, then commits real advances', async () => {
-    await frame();
-    const initial = await frame();
+    const initial = await accept();
     expect(initial.meta?.rerollsRemaining).toBe(1);
     state.cards = [201, 202, 203];
+    state.cardScore = 0.6;
     cardPixels(255);
     for (let i = 0; i < 3; i++) {
       const tooltip = await frame();
@@ -189,15 +307,16 @@ describe('worker confirmed state', () => {
     for (let i = 0; i < 3; i++) expect((await frame()).round).toBe(3);
     state.round = 3;
     state.choice = 2;
+    state.cardScore = 0.99;
     expect((await frame()).accepted).toBe(false);
-    const picked = await frame();
+    const picked = await accept();
     expect(picked).toMatchObject({ accepted: true, transition: 'choice', round: 3, choice: 2, key: '201,202,203' });
     state.round = 4;
     state.choice = 1;
     state.cards = [301, 302, 303];
     cardPixels(80);
     await frame();
-    expect(await frame()).toMatchObject({
+    expect(await accept()).toMatchObject({
       accepted: true,
       transition: 'round',
       round: 4,
@@ -206,19 +325,31 @@ describe('worker confirmed state', () => {
     });
   });
   it('requires two fresh frames after a confirmed reroll even when all three item IDs repeat', async () => {
-    await frame();
-    const initial = await frame();
+    const initial = await accept();
     state.rerolls = 0;
     state.spent = true;
     expect(await frame()).toMatchObject({ pending: true, accepted: false, key: '', reads: [] });
     expect(await frame()).toMatchObject({ pending: true, accepted: false, key: '', reads: [] });
-    const rerolled = await frame();
+    const rerolled = await accept();
     expect(rerolled).toMatchObject({ accepted: true, transition: 'reroll', key: initial.key });
     expect(rerolled.meta?.rerollsRemaining).toBe(0);
   });
-  it('ends the draft on the real SELECTS COMPLETE screenshot probe without matching its empty card circles', async () => {
+  it('keeps a new choice and its actual spent count when reroll arrives during card settling', async () => {
+    await accept();
+    state.choice = 2;
+    state.cards = [201, 202, 203];
+    cardPixels(255);
     await frame();
-    expect((await frame()).accepted).toBe(true);
+    expect((await frame()).pendingTransition).toBe(true);
+    state.rerolls = 0;
+    state.spent = true;
+    expect((await frame()).pendingTransition).toBe(true);
+    const final = await accept();
+    expect(final).toMatchObject({ choice: 2, transition: 'reroll', key: '201,202,203' });
+    expect(final.meta?.rerollsRemaining).toBe(0);
+  });
+  it('ends the draft on the real SELECTS COMPLETE screenshot probe without matching its empty card circles', async () => {
+    expect((await accept()).accepted).toBe(true);
     const before = state.cardReader.mock.calls.length;
     // Exact CHOICE probe from the supplied 3439x1439 ultrawide screenshot; full screenshot stays outside the repo.
     const { data } = await sharp('src/brawl/__tests__/assets/selects-complete-probe.png')
@@ -278,7 +409,7 @@ describe('worker confirmed state', () => {
       rosterPixels(255);
     }
     state.round = 1;
-    for (let i = 5; i < 10; i++) consume(await frame(), i);
+    for (let i = 5; i < 12; i++) consume(await frame(), i);
     expect(memory.enemies).toEqual(state.foes);
     expect(memory.owned).toEqual(state.inventory);
     expect(memory.acquisitions).toHaveLength(1);

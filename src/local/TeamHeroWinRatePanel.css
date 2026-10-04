@@ -2,45 +2,89 @@
   position: fixed;
   left: 4vw;
   top: 3vh;
-  width: clamp(245px, 22vw, 390px);
+  width: clamp(320px, 24vw, 420px);
+  max-width: 92vw;
   box-sizing: border-box;
   padding: 9px 12px;
-  border: 1px solid color-mix(in srgb, var(--teal, #2ec4b6) 40%, transparent);
+  border: 1px solid #777c80;
   border-radius: 4px;
   background: var(--overlay-panel, rgba(16, 19, 20, 0.85));
   color: var(--text, #ece6da);
-  font-size: clamp(11px, 1.3vh, 15px);
-  line-height: 1.45;
+  font-size: clamp(11px, 1.3vh, 14px);
+  line-height: 1.4;
   pointer-events: none;
   user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-hero-wr[data-direction='positive'] {
+  border-color: #52e38b;
+  background: rgba(18, 48, 32, 0.92);
+}
+
+.team-hero-wr[data-direction='negative'] {
+  border-color: #f07878;
+  background: rgba(58, 24, 28, 0.92);
 }
 
 .team-hero-wr-title {
   font-weight: 700;
+  margin-bottom: 5px;
 }
 
-.team-hero-wr-values {
+.team-hero-wr-teams {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.team-hero-wr-average,
+.team-hero-wr-team li,
+.team-hero-wr-difference {
   display: flex;
-  gap: 12px;
+  justify-content: space-between;
+  gap: 6px;
   align-items: baseline;
-  white-space: nowrap;
-  margin-top: 3px;
 }
 
-.team-hero-wr-values strong {
-  margin-left: auto;
+.team-hero-wr-average {
+  border-bottom: 1px solid rgba(236, 230, 218, 0.2);
+  padding-bottom: 3px;
 }
 
-.team-hero-wr-values [data-direction='positive'] {
-  color: var(--overlay-take, #52e38b);
+.team-hero-wr-team ul {
+  list-style: none;
+  padding: 0;
+  margin: 3px 0;
 }
 
-.team-hero-wr-values [data-direction='negative'] {
-  color: var(--overlay-reroll, #f3c969);
+.team-hero-wr-team li {
+  padding: 1px 0;
+}
+
+.team-hero-wr-team li > :last-child {
+  flex-shrink: 0;
+}
+
+.team-hero-wr-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.team-hero-wr-difference {
+  margin-top: 4px;
+}
+
+.team-hero-wr[data-direction='positive'] .team-hero-wr-difference strong {
+  color: #52e38b;
+}
+
+.team-hero-wr[data-direction='negative'] .team-hero-wr-difference strong {
+  color: #f07878;
 }
 
 .team-hero-wr-proxy,
 .team-hero-wr-source {
-  color: var(--muted, #a39e92);
+  color: #c2bdb4;
   font-size: 0.85em;
 }

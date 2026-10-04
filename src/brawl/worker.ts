@@ -65,7 +65,8 @@ export type WorkerOut =
 
 export interface FrameResult {
   teamRoster?: TeamRoster | null;
-  transition?: 'initial' | 'choice' | 'round' | 'reroll' | 'metadata';
+  transition?: 'initial' | 'choice' | 'round' | 'reroll' | 'metadata' | 'reacquire';
+  pendingTransition?: boolean;
   pending?: boolean;
   type: 'result';
   shop: boolean; // visible draft labels or unchanged known card pixels; false skips card/inventory recognition
@@ -90,11 +91,16 @@ const teamRoster = new TeamRosterConfirmation();
 let offerEpoch = 0;
 let closedSince: number | null = null;
 let committedCardSigs: Uint8Array[] = [];
+let pendingCardSigs: Uint8Array[] = [];
+let visualEpoch = 0;
+let pendingDirect = false;
+let captureSequence = 0;
 let previousInventory: number[] = [];
 let inventoryPick = false;
 let settledMeta: DraftMeta | null = null;
 let settledBarSig: Uint8Array | null = null;
 let nextMetaRetryAt = 0;
+let rosterInventoryReplayed = false;
 const completeRoster = (meta: DraftMeta | null) => !!meta?.self && new Set(enemiesFrom(meta.bar, meta.self)).size === 4;
 const completeMetadata = (meta: DraftMeta | null) =>
   completeRoster(meta) && (acceptedRound !== 1 || !!teamRoster.value);
@@ -104,7 +110,11 @@ let names: Record<string, string> = {};
 function pollRerolls(img: Parameters<RerollCounterReader['poll']>[0]) {
   rerollCounter.poll(
     img,
-    { key: acceptedKey, round: acceptedRound, choice: acceptedChoice },
+    {
+      key: acceptedKey,
+      round: offerLock.pendingLabels?.round ?? acceptedRound,
+      choice: offerLock.pendingLabels?.choice ?? acceptedChoice,
+    },
     performance.now(),
     (rerollsRemaining, ctx, spent) => {
       if (spent) {
@@ -112,6 +122,7 @@ function pollRerolls(img: Parameters<RerollCounterReader['poll']>[0]) {
         offerLock.armReroll();
         lastKey = '';
         pendingReads = [];
+        pendingCardSigs = [];
         settledSig = pendingSig = null;
       }
       post({ type: 'rerolls', forKey: ctx.key, forRound: ctx.round, forChoice: ctx.choice, rerollsRemaining, spent });
@@ -209,6 +220,7 @@ const forgetDraft = () => {
   offerLock.reset();
   teamRoster.reset();
   committedCardSigs = [];
+  pendingCardSigs = [];
   closedSince = null;
   previousInventory = [];
   inventoryPick = false;
@@ -349,9 +361,10 @@ self.addEventListener(
             shop: true,
             round: acceptedRound,
             choice: acceptedChoice,
-            pending: offerLock.awaitingReroll || undefined,
-            reads: offerLock.awaitingReroll ? [] : settledReads,
-            key: offerLock.awaitingReroll ? '' : acceptedKey,
+            pending: offerLock.awaitingReroll || offerLock.settling || undefined,
+            pendingTransition: offerLock.settling || undefined,
+            reads: offerLock.awaitingReroll || offerLock.settling ? [] : settledReads,
+            key: offerLock.awaitingReroll || offerLock.settling ? '' : acceptedKey,
             accepted: false,
             meta: settledMeta,
             inventory: null,
@@ -368,6 +381,30 @@ self.addEventListener(
       }
       closedSince = null;
       wasShop = true;
+      const captured = ++captureSequence;
+      if (acceptedKey && (labels.choice !== acceptedChoice || (labels.round > 0 && labels.round !== acceptedRound))) {
+        const alreadySettling = offerLock.settling;
+        offerLock.observe({ ...labels, key: '' }, performance.now(), false, { frame: captured, labelsOnly: true });
+        if (!alreadySettling && offerLock.settling) {
+          offerEpoch++;
+          recovery.reset();
+        }
+        if (offerLock.settling)
+          post({
+            type: 'result',
+            shop: true,
+            pending: true,
+            pendingTransition: true,
+            round: acceptedRound,
+            choice: acceptedChoice,
+            reads: [],
+            key: '',
+            accepted: false,
+            meta: null,
+            inventory: null,
+            ms: performance.now() - t0,
+          });
+      }
       const inventoryRects = inventoryRegions(img.width, img.height);
       const sig = frameSig(msg.regions, inventoryRects);
       const bsig = barSig(img);
@@ -394,6 +431,11 @@ self.addEventListener(
         );
         previousInventory = inventory;
       }
+      const iconSigs = cardSignatures(img);
+      const changedSlots = iconSigs.filter((s, i) => !sameSig(committedCardSigs[i] ?? null, s)).length;
+      const samePendingIcons =
+        pendingCardSigs.length === 3 && iconSigs.every((s, i) => sameSig(pendingCardSigs[i]!, s));
+      if (!samePendingIcons) visualEpoch++;
       if (
         acceptedKey &&
         acceptedKey === lastKey &&
@@ -401,7 +443,10 @@ self.addEventListener(
         (labels.round === 0 || labels.round === acceptedRound) &&
         (!rosterChanged || (!!settledBarSig && sameBar(settledBarSig, bsig))) &&
         sameSig(settledSig, sig) &&
-        !offerLock.awaitingReroll
+        !offerLock.awaitingReroll &&
+        !offerLock.settling &&
+        !offerLock.needsRestore &&
+        changedSlots === 0
       ) {
         offerLock.observe({ key: acceptedKey, round: acceptedRound, choice: acceptedChoice }, performance.now());
         let recoveredMeta = false;
@@ -415,8 +460,11 @@ self.addEventListener(
             matchBar = { bar: settledMeta.bar, self: settledMeta.self, sig: bsig };
             knownHero = matchBar;
             // Earlier inventory may precede a full roster read. Re-publish it after roster confirmation.
-            inventoryConfirmation.reset();
-            inventory = null;
+            if (!rosterInventoryReplayed) {
+              inventoryConfirmation.reset();
+              inventory = null;
+              rosterInventoryReplayed = true;
+            }
             recoveredMeta = true;
           }
         }
@@ -448,8 +496,11 @@ self.addEventListener(
       post({ type: 'tick', full: true });
       // A frame that looks the same as the one that just produced a full set of cards (and carries the same choice
       // label) confirms that read without repeating the expensive icon search: a new screen is accepted a frame sooner.
-      const confirmed = lastKey !== '' && pendingChoice === labels.choice && sameSig(pendingSig, sig);
+      const confirmed =
+        lastKey !== '' && pendingChoice === labels.choice && sameSig(pendingSig, sig) && samePendingIcons;
       let reads = confirmed ? pendingReads : stage('cards', () => readDraftScreen(img, idx, (id) => tiers[id] ?? 0));
+      const strongIcon = (r: CardRead) => r.present && r.match?.score >= 0.82 && r.match.margin >= 0.08;
+      const direct = confirmed ? pendingDirect : reads.length === 3 && reads.every(strongIcon);
       const readGeneration = recovery.generation;
       const epoch = offerEpoch;
       if (reads.some((r) => !r.present)) reads = await recovery.recover(img, reads, names, tiers);
@@ -459,22 +510,18 @@ self.addEventListener(
         seen === 3 ? reads.map((r) => `${r.itemId}${r.enhanced ? '+' : ''}${r.rare ? 'r' : ''}`).join(',') : '';
       let accepted = false,
         meta: DraftMeta | null = null;
-      const committedBefore = offerLock.current;
-      const wasReroll = offerLock.awaitingReroll;
+      const wasSettling = offerLock.settling;
       const commit = offerLock.observe(
         { key, round: labels.round, choice: labels.choice },
         performance.now(),
         inventoryPick,
+        { visual: visualEpoch, direct, changedSlots, frame: captured },
       );
-      const transition: FrameResult['transition'] = !commit
-        ? undefined
-        : !committedBefore
-          ? 'initial'
-          : wasReroll
-            ? 'reroll'
-            : committedBefore.round !== offerLock.current!.round
-              ? 'round'
-              : 'choice';
+      const transition = commit ? (offerLock.transition ?? undefined) : undefined;
+      if (!wasSettling && offerLock.settling) {
+        offerEpoch++;
+        recovery.reset();
+      }
       if (commit) {
         // A new card set, or the ROUND / CHOICE label changed under the same cards (a stale label must not stand):
         // (re)accept, which re-reads the hero bar and labels once the screen has settled.
@@ -506,6 +553,7 @@ self.addEventListener(
         settledMeta = meta;
         settledBarSig = bsig;
         nextMetaRetryAt = 0;
+        rosterInventoryReplayed = false;
         committedCardSigs = cardSignatures(img);
         settledSig = sig;
         settledReads = reads;
@@ -513,18 +561,21 @@ self.addEventListener(
       lastKey = key;
       pendingSig = key ? sig : null;
       pendingReads = reads;
+      pendingCardSigs = iconSigs;
+      pendingDirect = direct;
       pendingChoice = labels.choice;
       if (acceptedKey) pollRerolls(img);
       if (meta) meta.rerollsRemaining = rerollCounter.value ?? -1;
       post({
         type: 'result',
         shop: true,
-        pending: offerLock.awaitingReroll || undefined,
+        pending: !acceptedKey || offerLock.awaitingReroll || offerLock.settling || undefined,
+        pendingTransition: offerLock.settling || undefined,
         round: acceptedKey ? acceptedRound : labels.round,
         choice: acceptedKey ? acceptedChoice : labels.choice,
-        reads: offerLock.awaitingReroll ? [] : acceptedKey ? settledReads : reads,
-        key: offerLock.awaitingReroll ? '' : acceptedKey || key,
-        accepted: accepted && !offerLock.awaitingReroll,
+        reads: offerLock.awaitingReroll || offerLock.settling || !acceptedKey ? [] : settledReads,
+        key: offerLock.awaitingReroll || offerLock.settling || !acceptedKey ? '' : acceptedKey,
+        accepted: accepted && !offerLock.awaitingReroll && !offerLock.settling,
         transition,
         meta: accepted ? meta : settledMeta,
         teamRoster: teamRoster.value,
@@ -553,6 +604,7 @@ const nonShopResult = (t0: number): FrameResult => {
     knownHero = null;
     acceptedRound = acceptedChoice = 0;
     pendingReads = [];
+    pendingCardSigs = [];
   }
   return {
     type: 'result',

@@ -364,6 +364,26 @@ async function main() {
         takeCues: document.querySelectorAll('.overlay-action-cue[data-action="take"]').length,
         rerollCues: document.querySelectorAll('.overlay-action-cue[data-action="reroll"]').length,
         teamWR: !!document.querySelector('.team-hero-wr'),
+        teamWRDetails: (() => {
+          const p = document.querySelector('.team-hero-wr');
+          if (!p) return null;
+          const cs = getComputedStyle(p);
+          return {
+            teams: [...p.querySelectorAll('.team-hero-wr-team')].map((t) => ({
+              label: t.getAttribute('aria-label'),
+              average: t.querySelector('.team-hero-wr-average strong')?.textContent,
+              rows: [...t.querySelectorAll('li')].map((r) => ({
+                name: r.querySelector('.team-hero-wr-name')?.textContent,
+                rate: r.lastElementChild?.textContent,
+              })),
+            })),
+            direction: p.dataset.direction,
+            difference: p.querySelector('.team-hero-wr-difference strong')?.textContent,
+            border: cs.borderTopColor,
+            background: cs.backgroundColor,
+            width: p.getBoundingClientRect().width,
+          };
+        })(),
       })`,
       );
 
@@ -588,8 +608,31 @@ async function main() {
       cur.takeCues === 1 && cur.rerollCues === 0,
       `take=${cur.takeCues} reroll=${cur.rerollCues}`,
     );
-    const teamWR = await waitFor(async () => (await readOverlay()).teamWR, 1_500, 50);
-    check('round1-team-average-wr', !!teamWR, `visible=${!!teamWR}`);
+    const teamWR = await waitFor(async () => (await readOverlay()).teamWRDetails, 1_500, 50);
+    const teamWRPalette = {
+      positive: ['rgb(82, 227, 139)', 'rgba(18, 48, 32, 0.92)'],
+      negative: ['rgb(240, 120, 120)', 'rgba(58, 24, 28, 0.92)'],
+      neutral: ['rgb(119, 124, 128)', null],
+    }[teamWR?.direction];
+    check(
+      'round1-team-average-wr',
+      !!teamWR &&
+        teamWR.teams.length === 2 &&
+        teamWR.teams.map((t) => t.label).join('|') === 'Ours|Enemy' &&
+        teamWR.teams.every(
+          (t) =>
+            /^\d+\.\d%$/.test(t.average) &&
+            t.rows.length === 4 &&
+            t.rows.every((r) => r.name && /^\d+\.\d%$/.test(r.rate)),
+        ) &&
+        new Set(teamWR.teams.flatMap((t) => t.rows.map((r) => r.name))).size === 8 &&
+        /^[+−]?(?:\d+\.\d|<0\.1) pp$/.test(teamWR.difference.trim()) &&
+        !!teamWRPalette &&
+        teamWR.border === teamWRPalette[0] &&
+        (!teamWRPalette[1] || teamWR.background === teamWRPalette[1]) &&
+        teamWR.width <= 420.5,
+      JSON.stringify(teamWR),
+    );
     if (vid && bestPos) {
       await js(overlay, 'new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))');
       const cards = cur.drawn.filter((d) => d.plate && (d.kind === 'best' || d.kind === 'card'));
@@ -828,10 +871,10 @@ async function main() {
     // --- off ---
     await js(control, CLICK_TEST_MODE_JS);
     const closed = await waitFor(() => !e2e.getTestWindow(), 6_000);
-    await sleep(300);
+    const overlayHidden = await waitFor(() => !overlay.isVisible(), 1_000, 50);
     check(
       'testmode-off',
-      !!closed && !overlay.isVisible() && !control.isDestroyed(),
+      !!closed && !!overlayHidden && !control.isDestroyed(),
       `dummy=${e2e.getTestWindow() ? 'open' : 'closed'} overlayVisible=${overlay.isVisible()}`,
     );
   }
