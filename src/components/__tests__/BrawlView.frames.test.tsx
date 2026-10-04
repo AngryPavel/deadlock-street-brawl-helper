@@ -683,8 +683,12 @@ it('retains the first-round team panel through the real preparation phase while 
   now = 11_700;
   await deliver(gameplay);
   expect(sent.at(-1)?.teamEdge ?? null).toBeNull();
+  now = 11_800;
+  await deliver(countdown);
+  expect(sent.at(-1)?.teamEdge).toEqual(edge);
   now = 12_000;
-  await deliver({ ...countdown, preparationRound: 2 });
+  await deliver({ ...countdown, preparationRound: 2, preparationSample: 10 });
+  await deliver({ ...countdown, preparationRound: 2, preparationSample: 11 });
   expect(sent.at(-1)?.teamEdge ?? null).toBeNull();
   await deliver(countdown);
   expect(sent.at(-1)?.teamEdge ?? null).toBeNull();

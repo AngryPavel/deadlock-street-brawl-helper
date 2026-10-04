@@ -78,7 +78,7 @@ describe('first round preparation lifetime', () => {
     expect(phase.observe(countdown, 11000)).toBe(true);
     expect(phase.observe(absent, 11300)).toBe(true);
     expect(phase.observe(absent, 11600)).toBe(false);
-    expect(phase.observe(countdown, 12000)).toBe(false);
+    expect(phase.observe(countdown, 12000)).toBe(true);
   });
   it('tolerates a brief tooltip/dropout, then ends on sustained blank or gameplay', () => {
     const phase = new FirstRoundPreparation();
@@ -89,6 +89,22 @@ describe('first round preparation lifetime', () => {
     expect(phase.observe(absent, 900)).toBe(true);
     expect(phase.observe(countdown, 1000)).toBe(true);
     expect(phase.observe(absent, 1600)).toBe(false);
+  });
+  it('recovers from a sustained cue dropout only with fresh first-round screen evidence', () => {
+    const phase = new FirstRoundPreparation();
+    phase.observe(countdown, 0);
+    expect(phase.observe(absent, 600)).toBe(false);
+    expect(phase.needsFullFrame(900)).toBe(true);
+    expect(phase.observe(draft, 1000)).toBe(false); // uncommitted raw shop labels are insufficient to recover
+    expect(phase.observe({ ...countdown, round: 0 }, 1100)).toBe(false);
+    expect(phase.observe(countdown, 1200)).toBe(true);
+    expect(phase.observe(absent, 1800)).toBe(false);
+    expect(phase.needsFullFrame(5199)).toBe(true);
+    expect(phase.needsFullFrame(5200)).toBe(false);
+    expect(phase.observe({ ...draft, confirmedRound: true }, 5300)).toBe(true);
+    phase.observe({ ...draft, round: 2, confirmedRound: true }, 5400);
+    expect(phase.needsFullFrame(5401)).toBe(false);
+    expect(phase.observe(countdown, 5500)).toBe(false);
   });
   it('suppresses later rounds and naked countdown, and resets for capture stop/new match', () => {
     const phase = new FirstRoundPreparation();

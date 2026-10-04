@@ -373,7 +373,8 @@ const post = (m: WorkerOut) => {
       },
       performance.now(),
     );
-    if (wasPreparation && !preparation.visible && !m.shop) teamRoster.reset();
+    if (wasPreparation && !preparation.visible && !preparation.needsFullFrame(performance.now()) && !m.shop)
+      teamRoster.reset();
     m = { ...m, roundCountdown: frameCountdown, preparationRound, preparationSample, metadataSample: captureSequence };
   }
   (self as unknown as { postMessage(m: unknown): void }).postMessage({ ...m, captureEpoch });
@@ -381,7 +382,7 @@ const post = (m: WorkerOut) => {
 let timer: ReturnType<typeof setTimeout> | undefined;
 const tick = (after: number, full: boolean) => {
   clearTimeout(timer);
-  timer = setTimeout(() => post({ type: 'tick', full: full || preparation.visible }), after);
+  timer = setTimeout(() => post({ type: 'tick', full: full || preparation.needsFullFrame(performance.now()) }), after);
 }; // one chain, even if the page sent two frames
 
 self.addEventListener(
@@ -968,7 +969,7 @@ const nonShopResult = (t0: number): FrameResult => {
     if (acceptedKey) offerEpoch++;
     lastKey = acceptedKey = '';
     offerLock.reset();
-    if (!preparation.visible) teamRoster.reset();
+    if (!preparation.visible && !preparation.needsFullFrame(t0)) teamRoster.reset();
     committedCardSigs = [];
     inventoryConfirmation.reset();
     settledMeta = null;

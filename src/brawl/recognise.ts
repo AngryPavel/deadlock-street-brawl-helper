@@ -1228,8 +1228,16 @@ export function isShopScreen(img: RGBImage): boolean {
 /** The part of a `width`x`height` frame `isShopScreen` reads (the "CHOICE n OF 3" digit plus slack), in frame
  *  px. Idle polling copies only this crop out of the video instead of the whole frame. */
 export function shopProbeRect(width: number, height: number) {
+  return labelProbeRect(width, height, LABELS.choice);
+}
+
+/** The ROUND glyph alone, used to qualify first-round countdown capture without reading portraits. */
+export function roundProbeRect(width: number, height: number) {
+  return labelProbeRect(width, height, LABELS.round);
+}
+
+function labelProbeRect(width: number, height: number, b: { x0: number; y0: number; x1: number; y1: number }) {
   const { sx, sy, offsetX } = hudLayout(width, height);
-  const b = LABELS.choice;
   const x = Math.max(0, Math.floor(offsetX + b.x0 * sx) - 4),
     y = Math.max(0, Math.floor(b.y0 * sy) - 4);
   return {

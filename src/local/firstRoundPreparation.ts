@@ -97,8 +97,8 @@ export function hasRoundCountdown(img: RGBImage): boolean {
   return false;
 }
 
-/** A confirmed first draft arms the preparation interval. Brief missing cues are tolerated, then the
- * interval ends permanently for this match; reset only for a verified new match or capture restart. */
+/** Missing cues hide the panel, but fresh ROUND 1 plus the fixed caption may recover it. Only verified
+ * later-round evidence ends preparation permanently until a new match or capture restart. */
 export class FirstRoundPreparation {
   visible = false;
   private ended = false;
@@ -106,6 +106,10 @@ export class FirstRoundPreparation {
   private laterRound = 0;
   private laterSamples = 0;
   private lastLaterSample: number | undefined;
+  /** Keep copying cue regions briefly after a dropout; ordinary gameplay returns to cheap probes. */
+  needsFullFrame(now: number): boolean {
+    return !this.ended && this.lastSeen !== null && now - this.lastSeen < 4000;
+  }
   reset() {
     this.visible = false;
     this.ended = false;
@@ -150,13 +154,13 @@ export class FirstRoundPreparation {
     this.laterRound = this.laterSamples = 0;
     this.lastLaterSample = undefined;
     if (this.ended) return false;
-    if (round === 1 && (shop || countdown)) {
+    const recovering = !this.visible && this.lastSeen !== null;
+    if (round === 1 && (countdown || (shop && (!recovering || confirmedRound)))) {
       this.lastSeen = now;
       this.visible = true;
     } else if (this.visible && countdown) this.lastSeen = now;
     else if (this.visible && this.lastSeen !== null && now - this.lastSeen >= 600) {
       this.visible = false;
-      this.ended = true;
     }
     return this.visible;
   }

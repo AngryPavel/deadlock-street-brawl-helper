@@ -709,7 +709,10 @@ describe('worker confirmed state', () => {
     expect(state.metadataReader).toHaveBeenCalledTimes(2);
     await closeDraft();
     await frame();
-    expect((await frame()).teamRoster).toBeNull();
+    expect((await frame()).teamRoster).toEqual(confirmed.teamRoster);
+    state.choice = 0;
+    await frame(4000);
+    expect((await frame(300)).teamRoster).toBeNull();
   });
   it('holds the committed offer and known count through repeated foreign cards and false labels, then commits real advances', async () => {
     const initial = await accept();
@@ -903,9 +906,19 @@ describe('worker confirmed state', () => {
     vi.advanceTimersByTime(300);
     expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
     expect(await frame(11_000)).toMatchObject({ shop: false, roundCountdown: true });
-    // Same real ROUND 1, but no fixed caption: the first-round preparation has ended.
+    // A missing fixed caption hides the panel but keeps bounded cue polling for recovery.
     new Uint8Array(regions[0]!.buffer).fill(0);
     expect(await frame(600)).toMatchObject({ shop: false, preparationRound: 1, roundCountdown: false });
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
+    // A tooltip/dropout longer than the visibility timeout must not permanently disable the phase.
+    regions[0]!.buffer = Uint8Array.from(caption).buffer;
+    expect(await frame()).toMatchObject({ shop: false, roundCountdown: true });
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
+    expect(state.cardReader).toHaveBeenCalledTimes(calls);
+    new Uint8Array(regions[0]!.buffer).fill(0);
+    await frame(4000);
     vi.advanceTimersByTime(300);
     expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: false });
     // A capture restart/F8 reads one full frame and can enter the still-visible first preparation.
@@ -921,6 +934,17 @@ describe('worker confirmed state', () => {
     vi.advanceTimersByTime(300);
     expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
     expect(await frame()).toMatchObject({ shop: false, preparationRound: 2, roundCountdown: true });
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: false });
+  });
+  it('bounds full cue retries when video frames remain unavailable during first preparation', async () => {
+    state.round = 1;
+    await accept();
+    await handle({ data: { type: 'idle' } } as MessageEvent<WorkerIn>);
+    vi.advanceTimersByTime(300);
+    expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: true });
+    vi.advanceTimersByTime(4000);
+    await handle({ data: { type: 'idle' } } as MessageEvent<WorkerIn>);
     vi.advanceTimersByTime(300);
     expect(outputs.filter((m) => m.type === 'tick').at(-1)).toMatchObject({ full: false });
   });
