@@ -1,5 +1,18 @@
 import type { RGBImage, Region } from '../brawl/recognise';
 
+const creamInk = (r: number, g: number, b: number) =>
+  Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 85;
+
+/** A missing name band cannot authorize a new offer, even when empty circles match an icon. */
+export function hasItemNameInk(img: RGBImage, region: Region): boolean {
+  for (let y = region.y; y < region.y + region.height; y++)
+    for (let x = region.x; x < region.x + region.width; x++) {
+      const s = (y * img.width + x) * img.channels;
+      if (creamInk(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!)) return true;
+    }
+  return false;
+}
+
 /** Item-name bands below the icons; the ENHANCED badge is outside these rectangles. */
 export function cardNameRegions(
   width: number,
@@ -28,9 +41,7 @@ export function itemNameCrop(img: RGBImage, region: Region) {
       const i = (y * region.width + x) * 4;
       const lum = Math.round(0.299 * img.data[s]! + 0.587 * img.data[s + 1]! + 0.114 * img.data[s + 2]!);
       // Names are cream/white; remove the coloured card rings that otherwise look like extra letters.
-      const low = Math.min(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!);
-      const high = Math.max(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!);
-      data[i] = data[i + 1] = data[i + 2] = low > 150 && high - low < 85 ? 0 : 255;
+      data[i] = data[i + 1] = data[i + 2] = creamInk(img.data[s]!, img.data[s + 1]!, img.data[s + 2]!) ? 0 : 255;
       data[i + 3] = 255;
       hash = Math.imul(hash ^ lum, 16777619);
     }

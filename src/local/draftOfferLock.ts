@@ -10,6 +10,7 @@ export interface OfferEvidence {
   visual?: number;
   /** All three direct icon matches are strong; recovered OCR is not this evidence. */
   direct?: boolean;
+  nameCorroborated?: boolean;
   changedSlots?: number;
 }
 type Reason = 'choice' | 'round' | 'reroll' | 'reacquire';
@@ -62,6 +63,12 @@ export class DraftOfferLock {
     else if (this.current) this.phase = { ...this.current, since: -1, reason: 'reroll' };
     this.clearCandidate();
   }
+  restoreCurrent() {
+    if (this.phase?.reason === 'reacquire') {
+      this.phase = null;
+      this.clearCandidate();
+    }
+  }
   observe(proposed: OfferIdentity, now: number, _inventoryPick = false, evidence: OfferEvidence = {}): boolean {
     this.transition = null;
     const current = this.current;
@@ -106,8 +113,9 @@ export class DraftOfferLock {
       }
       if (sameLabels) {
         const correction =
-          evidence.direct &&
-          ((now <= this.correctionUntil && (evidence.changedSlots ?? 0) > 0) || evidence.changedSlots === 3);
+          (evidence.direct &&
+            ((now <= this.correctionUntil && (evidence.changedSlots ?? 0) > 0) || evidence.changedSlots === 3)) ||
+          (evidence.nameCorroborated && evidence.changedSlots === 3);
         if (!correction) {
           this.clearCandidate();
           return false;
@@ -159,6 +167,10 @@ export class DraftOfferLock {
     }
     const phase = this.phase;
     if (phase) {
+      if (phase.reason === 'reacquire' && !evidence.direct && !evidence.nameCorroborated) {
+        this.clearCandidate();
+        return false;
+      }
       const unchangedPrior =
         phase.reason !== 'reroll' &&
         phase.reason !== 'reacquire' &&

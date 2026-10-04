@@ -65,6 +65,23 @@ describe('committed draft transitions', () => {
     expect(lock.observe(initial, 1500)).toBe(true);
     expect(lock.transition).toBe('reroll');
   });
+  it('requires independent evidence for every replacement during reacquisition and can restore original pixels', () => {
+    const lock = locked();
+    const strong = { ...initial, key: '4,5,6' };
+    lock.observe(strong, 10_000, false, { direct: true, changedSlots: 3 });
+    const weak = { ...initial, key: '7,8,9' };
+    for (const time of [10_100, 10_300, 10_600])
+      expect(lock.observe(weak, time, false, { changedSlots: 3 })).toBe(false);
+    expect(lock.current).toEqual(initial);
+    lock.restoreCurrent();
+    expect(lock.settling).toBe(false);
+    const names = { nameCorroborated: true, changedSlots: 3 };
+    lock.observe(weak, 11_000, false, names);
+    lock.observe(weak, 11_150, false, names);
+    expect(lock.observe(weak, 11_300, false, names)).toBe(true);
+    expect(lock.transition).toBe('reacquire');
+    expect(lock.awaitingReroll).toBe(false);
+  });
   it('keeps the confirmed new-choice target when a reroll is spent during settling', () => {
     const lock = locked();
     const next = { ...initial, choice: 3, key: '' };
